@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+httpx
+pydantic
+pydantic-settings
+tenacity
+anyio
+prometheus-client
+redis

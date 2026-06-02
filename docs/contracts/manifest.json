@@ -1,0 +1,91 @@
+{
+  "repo": "execution-engine",
+  "version": 1,
+  "runtimeDependencies": ["control-plane", "llm-gateway"],
+  "counterparts": {
+    "control-plane": {
+      "dispatchPaths": ["POST /api/v1/runs", "POST /api/v1/runs/{run_id}/cancel"],
+      "dispatchAuth": "Authorization: Bearer <EXECUTION_ENGINE_DISPATCH_TOKEN>",
+      "internalTransportSecurity": "HTTP by default; HTTPS/mTLS when Helm internalTransport.tls.enabled=true; bearer/JWT tokens remain required",
+      "controlPlanePaths": [
+        "POST /internal/v1/runs/{runId}/bootstrap",
+        "POST /internal/v1/runs/{runId}/approvals",
+        "GET /internal/v1/runs/{runId}/continuation",
+        "POST /internal/v1/runs/{runId}/approvals/{approvalId}/execution-started",
+        "POST /internal/v1/runs/{runId}/approvals/{approvalId}/execution-finished",
+        "DELETE /internal/v1/runs/{runId}/continuation",
+        "GET /internal/v1/sessions/{sessionId}/context?run_id=<runId>",
+        "POST /internal/v1/runs/{runId}/events",
+        "GET /internal/v1/runs/{runId}/event-cursor",
+        "POST /internal/v1/runs/{runId}/commit"
+      ],
+      "bootstrapFields": [
+        "contract_version",
+        "scope.{workspace_id,target_id,target_type,session_id,run_id,user_id}",
+        "policy.{max_runtime_ms,max_output_tokens,budget_cents,max_steps,max_tool_calls,max_duplicate_tool_calls}",
+        "context.{endpoint,max_context_tokens}",
+        "llm.{provider,model,temperature,mode,gateway.{url,token,request_timeout_ms}}",
+        "tools.{tool_registry_version,allowed_tools,tool_specs,gateway.{url,token},confirmation_required_for_write,approval_timeout_seconds}",
+        "routing",
+        "tracing"
+      ],
+      "contextFields": ["messages", "summaries", "attachments"],
+      "eventFrameFields": ["schema_version", "run_id", "seq", "ts", "type", "payload"],
+      "eventTypes": [
+        "run_progress",
+        "run_started",
+        "assistant_message_started",
+        "assistant_token_delta",
+        "tool_call_started",
+        "tool_call_completed",
+        "tool_approval_requested",
+        "tool_approval_approved",
+        "tool_approval_rejected",
+        "tool_approval_expired",
+        "assistant_message_completed",
+        "run_failed",
+        "run_cancelled",
+        "run_completed"
+      ],
+      "commitStatusValues": ["completed", "failed", "cancelled"],
+      "commitAssistantMessageFields": ["content", "format"],
+      "commitUsageFields": ["input_tokens", "output_tokens", "tool_calls"],
+      "commitTimingFields": ["started_at", "ended_at"],
+      "dispatchSemantics": [
+        "202 accepted_or_active",
+        "200 terminal_idempotent_replay",
+        "409 run_id_scope_mismatch",
+        "429 overloaded"
+      ]
+    },
+    "llm-gateway": {
+      "streamPath": "POST /api/v1/llm/chat-completions:stream",
+      "toolCallPath": "POST /api/v1/mcp/tool-call",
+      "internalTransportSecurity": "HTTP by default; HTTPS/mTLS when Helm internalTransport.tls.enabled=true; run-scoped JWTs remain required",
+      "streamRequestFields": [
+        "run_id",
+        "workspace_id",
+        "target_id",
+        "target_type",
+        "session_id",
+        "provider",
+        "model",
+        "messages",
+        "temperature",
+        "max_output_tokens",
+        "tools"
+      ],
+      "streamResponseTypes": ["delta", "tool_call", "final", "error"],
+      "localDeterministicStreamEnv": "LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES",
+      "toolCallRequestFields": [
+        "run_id",
+        "workspace_id",
+        "target_id",
+        "target_type",
+        "tool",
+        "arguments"
+      ],
+      "toolCallResponseFields": ["result", "is_error"]
+    }
+  }
+}

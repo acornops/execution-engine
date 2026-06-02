@@ -1,0 +1,242 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, feat/* ]
+    tags: [ "v*.*.*" ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run_full: ${{ steps.filter.outputs.run_full }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        name: Detect docs-only changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]] && git rev-parse --verify HEAD^1 >/dev/null 2>&1 && git rev-parse --verify HEAD^2 >/dev/null 2>&1; then
+            files="$(git diff --name-only HEAD^1 HEAD^2)"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+            if [[ "${base}" =~ ^0+$ ]]; then
+              base="$(git rev-list --max-parents=0 "${head}")"
+            fi
+
+            if ! git cat-file -e "${base}^{commit}" 2>/dev/null || ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
+              echo "run_full=true" >> "${GITHUB_OUTPUT}"
+              echo "Unable to resolve diff range; running full CI."
+              exit 0
+            fi
+
+            files="$(git diff --name-only "${base}" "${head}")"
+          fi
+          if [[ -z "${files}" ]]; then
+            run_full=true
+          else
+            docs_only=true
+            while IFS= read -r file; do
+              [[ -z "${file}" ]] && continue
+              case "${file}" in
+                *.md|*.mdx|docs/**|README|README.*|CHANGELOG|CHANGELOG.*|CONTRIBUTING|CONTRIBUTING.*|LICENSE|LICENSE.*)
+                  ;;
+                *)
+                  docs_only=false
+                  ;;
+              esac
+            done <<< "${files}"
+
+            if [[ "${docs_only}" == "true" ]]; then
+              run_full=false
+            else
+              run_full=true
+            fi
+          fi
+
+          echo "run_full=${run_full}" >> "${GITHUB_OUTPUT}"
+          echo "run_full=${run_full}"
+
+  docs-only:
+    needs: changes
+    if: needs.changes.outputs.run_full != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip expensive CI
+        run: echo "Only Markdown/docs files changed; expensive CI jobs skipped."
+
+  lint:
+    needs: changes
+    if: needs.changes.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: |
+            constraints.txt
+            requirements*.txt
+            pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r requirements.lock
+          pip install -c constraints.txt -r requirements-dev.txt
+      - name: Run lint
+        run: ruff check .
+
+  unit-test:
+    needs: [changes, lint]
+    if: needs.changes.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: |
+            constraints.txt
+            requirements*.txt
+            pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r requirements.lock
+          pip install -c constraints.txt -r requirements-dev.txt
+      - name: Run unit tests
+        run: |
+          PYTHONPATH=. pytest tests/test_unit.py tests/test_worker_fallback.py tests/test_supporting_components.py --cov=execution_engine --cov-report=term-missing --cov-report=xml
+          python3 scripts/check-contracts.py
+          python3 scripts/check-harness.py
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: execution-engine-coverage
+          path: coverage.xml
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          flags: execution-engine
+          fail_ci_if_error: false
+
+  integration-test:
+    needs: [changes, unit-test]
+    if: needs.changes.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build and start services
+        run: docker compose up -d --build
+      - name: Wait for services to be ready
+        run: sleep 10
+      - name: Run integration tests
+        run: docker compose exec -T -e EE_URL=http://127.0.0.1:8080 -e ORCH_URL=http://orchestrator:8000 execution-engine pytest tests/test_integration.py
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  image-supply-chain:
+    needs: [changes, integration-test]
+    if: needs.changes.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: |
+            constraints.txt
+            requirements*.txt
+            pyproject.toml
+      - name: Audit Python dependencies
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip-audit -r requirements.lock
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build production image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: production
+          push: false
+          tags: acornops/execution-engine:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: acornops/execution-engine:ci
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: execution-engine-sbom
+          path: sbom.spdx.json
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: acornops/execution-engine:ci
+          format: table
+          output: trivy-results.txt
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+      - name: Block on actionable Trivy findings
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: acornops/execution-engine:ci
+          format: table
+          output: trivy-actionable-results.txt
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Upload Trivy report artifact
+        if: ${{ always() && hashFiles('trivy-results.txt') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: execution-engine-trivy-report
+          path: |
+            trivy-results.txt
+            trivy-actionable-results.txt
+      - name: Publish Trivy summary
+        if: ${{ always() && hashFiles('trivy-results.txt') != '' }}
+        run: |
+          {
+            echo "### Trivy image scan"
+            echo "<details><summary>HIGH/CRITICAL findings (full report)</summary>"
+            echo ""
+            echo '```text'
+            cat trivy-results.txt
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"

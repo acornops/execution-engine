@@ -1,0 +1,102 @@
+services:
+  execution-engine:
+    build:
+      context: .
+      target: test
+    image: acornops/execution-engine:local
+    command:
+      [
+        "uvicorn",
+        "execution_engine.app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+        "--reload",
+        "--reload-dir",
+        "/app"
+      ]
+    ports:
+      - "8080:8080"
+    environment:
+      ORCH_BASE_URL: http://orchestrator:8000
+      ORCH_SERVICE_TOKEN: dev_token
+      EXECUTION_ENGINE_DISPATCH_TOKEN: ${EXECUTION_ENGINE_DISPATCH_TOKEN:-default_dispatch_token}
+      ENABLE_API_DOCS: "true"
+      REDIS_URL: redis://redis:6379/1
+      EXECUTION_GATEWAY_BASE_URL: http://gateway:8001
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+
+  orchestrator:
+    build:
+      context: .
+      target: test
+    command:
+      [
+        "uvicorn",
+        "harness_orchestrator:app",
+        "--app-dir",
+        "tests",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+        "--reload-dir",
+        "/app"
+      ]
+    ports:
+      - "8000:8000"
+    environment:
+      GATEWAY_URL: http://gateway:8001
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ./:/app
+
+  gateway:
+    build:
+      context: .
+      target: test
+    command:
+      [
+        "uvicorn",
+        "harness_gateway:app",
+        "--app-dir",
+        "tests",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8001",
+        "--reload",
+        "--reload-dir",
+        "/app"
+      ]
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ./:/app
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

@@ -1,0 +1,20 @@
+services:
+  execution-engine:
+    image: ${EXECUTION_ENGINE_IMAGE:-ghcr.io/acornops/execution-engine:0.0.1-experimental.1}
+    environment:
+      ORCH_BASE_URL: ${ORCH_BASE_URL:-http://control-plane:8081}
+      ORCH_SERVICE_TOKEN: ${ORCH_SERVICE_TOKEN:-change-me}
+      EXECUTION_ENGINE_DISPATCH_TOKEN: ${EXECUTION_ENGINE_DISPATCH_TOKEN:-change-me}
+      HTTP_PORT: ${HTTP_PORT:-8080}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-false}
+      REDIS_URL: ${REDIS_URL:-}
+      EXECUTION_GATEWAY_BASE_URL: ${EXECUTION_GATEWAY_BASE_URL:-}
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/ready')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped

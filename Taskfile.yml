@@ -1,0 +1,104 @@
+version: '3'
+
+silent: true
+
+vars:
+  PYTHON:
+    sh: |
+      if [ -x .venv/bin/python ]; then
+        echo .venv/bin/python
+      elif command -v python3.12 >/dev/null 2>&1; then
+        echo python3.12
+      else
+        echo python3
+      fi
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build Docker images
+    cmds:
+      - docker compose build
+
+  up:
+    desc: Start services in background
+    cmds:
+      - docker compose up -d
+
+  down:
+    desc: Stop and remove containers
+    cmds:
+      - docker compose down
+
+  restart:
+    desc: Restart services
+    deps: [down, up]
+
+  logs:
+    desc: Tail service logs
+    cmds:
+      - docker compose logs -f
+
+  python:check:
+    desc: Ensure the local interpreter matches production Python
+    cmds:
+      - "{{.PYTHON}} scripts/check-python-version.py"
+
+  lint:
+    desc: Run Ruff lint checks
+    cmds:
+      - task python:check
+      - "{{.PYTHON}} -m ruff check ."
+
+  unit-test:
+    desc: Run unit tests
+    cmds:
+      - task python:check
+      - "PYTHONPATH=. {{.PYTHON}} -m pytest tests/test_unit.py tests/test_worker_fallback.py tests/test_supporting_components.py"
+
+  contracts:check:
+    desc: Run contract documentation checks
+    cmds:
+      - task python:check
+      - "{{.PYTHON}} scripts/check-contracts.py"
+
+  harness:check:
+    desc: Run harness documentation checks
+    cmds:
+      - task python:check
+      - "{{.PYTHON}} scripts/check-harness.py"
+
+  contract-test:
+    desc: Compatibility alias for contracts:check
+    cmds:
+      - task contracts:check
+
+  harness-test:
+    desc: Compatibility alias for harness:check
+    cmds:
+      - task harness:check
+
+  validate:
+    desc: Run canonical local validation
+    cmds:
+      - task lint
+      - task unit-test
+      - task contracts:check
+      - task harness:check
+
+  test:
+    desc: Run integration tests inside execution-engine container
+    cmds:
+      - docker compose exec -e EE_URL=http://127.0.0.1:8080 -e ORCH_URL=http://orchestrator:8000 execution-engine pytest tests/test_integration.py
+
+  clean:
+    desc: Remove docker artifacts and local Python cache/log files
+    cmds:
+      - docker compose down -v --remove-orphans
+      - python -c "import pathlib, shutil; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]"
+      - python -c "import pathlib; [p.unlink() for p in pathlib.Path('.').rglob('*.pyc') if p.is_file()]"
+      - python -c "import pathlib; [p.unlink() for p in pathlib.Path('.').glob('*.log') if p.is_file()]"
