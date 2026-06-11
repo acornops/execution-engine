@@ -13,7 +13,7 @@ app = FastAPI()
 async def health():
     return {"status": "ok"}
 
-@app.post("/api/v1/llm/chat-completions:stream")
+@app.post("/api/v1/llm/generations:stream")
 async def stream(request: Request):
     data = await request.json()
     run_id = data.get("run_id", "")

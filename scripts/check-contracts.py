@@ -16,6 +16,7 @@ MANIFEST = json.loads(read("docs/contracts/manifest.json"))
 APP_SOURCE = read("execution_engine/app.py")
 MODELS_SOURCE = read("execution_engine/models.py")
 WORKER_SOURCE = read("execution_engine/worker.py")
+REASONING_SUMMARY_SOURCE = read("execution_engine/reasoning_summary_events.py")
 ORCH_CLIENT_SOURCE = read("execution_engine/orchestrator_client.py")
 GATEWAY_CLIENT_SOURCE = read("execution_engine/gateway_client.py")
 TOOL_CLIENT_SOURCE = read("execution_engine/agent/tools.py")
@@ -111,14 +112,14 @@ for needle in (
     expect_in(ORCH_CLIENT_SOURCE, needle, "Control-plane client")
 
 for needle in (
-    'url = f"{self.url}/api/v1/llm/chat-completions:stream"',
+    'url = f"{self.url}/api/v1/llm/generations:stream"',
     'self._client.post(f"{self.url}/api/v1/mcp/tool-call"',
     "if tool_name not in self.allowed_tools",
 ):
     expect_in(GATEWAY_CLIENT_SOURCE + TOOL_CLIENT_SOURCE, needle, "LLM-gateway client")
 
 for event_type in CONTROL_PLANE_CONTRACT["eventTypes"]:
-    expect_in(WORKER_SOURCE, f'"{event_type}"', "Worker event emission")
+    expect_in(WORKER_SOURCE + REASONING_SUMMARY_SOURCE, f'"{event_type}"', "Worker event emission")
     expect_in(DOC, f"`{event_type}`", "Documented event")
 
 for field in CONTROL_PLANE_CONTRACT["bootstrapFields"]:

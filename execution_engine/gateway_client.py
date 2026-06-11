@@ -12,7 +12,7 @@ from execution_engine.util.metrics import gateway_stream_malformed_chunks_total,
 
 class GatewayLlmClient:
     """
-    Handles streaming chat completions from the Execution Gateway.
+    Handles streaming generations from the Execution Gateway.
 
     The gateway acts as a credential boundary, resolving provider-specific keys.
     """
@@ -30,7 +30,7 @@ class GatewayLlmClient:
         self.timeout = max(timeout_ms / 1000.0, 1.0)
         self.headers = {"Authorization": f"Bearer {self.token}"}
 
-    async def stream_chat_completions(
+    async def stream_generation(
         self,
         run_id: str,
         workspace_id: str,
@@ -42,10 +42,11 @@ class GatewayLlmClient:
         messages: List[Dict[str, str]],
         temperature: float,
         max_output_tokens: int | None,
+        reasoning: Dict[str, str] | None = None,
         tools: List[Dict[str, Any]] | None = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Streams chat completions from the gateway.
+        Streams generations from the gateway.
 
         Args:
             run_id: The ID of the run.
@@ -60,7 +61,8 @@ class GatewayLlmClient:
             max_output_tokens: Maximum tokens to generate. If None, provider defaults apply.
 
         Yields:
-            A dictionary representing a stream chunk (delta, final, or error).
+            A dictionary representing a stream chunk. Known chunk types include
+            delta, final, error, and reasoning_summary_* provider summary events.
         """
 
         payload = {
@@ -76,6 +78,8 @@ class GatewayLlmClient:
         }
         if max_output_tokens is not None:
             payload["max_output_tokens"] = max_output_tokens
+        if reasoning:
+            payload["reasoning"] = reasoning
         if tools:
             payload["tools"] = tools
 
@@ -87,7 +91,7 @@ class GatewayLlmClient:
         )
         try:
             async with httpx.AsyncClient(headers=self.headers, timeout=timeout, **httpx_tls_kwargs()) as client:
-                url = f"{self.url}/api/v1/llm/chat-completions:stream"
+                url = f"{self.url}/api/v1/llm/generations:stream"
                 async with client.stream("POST", url, json=payload) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():

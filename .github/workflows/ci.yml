@@ -190,6 +190,9 @@ jobs:
           push: false
           tags: acornops/execution-engine:ci
           load: true
+          pull: true
+          build-args: |
+            APT_CACHE_BUST=${{ github.run_id }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Generate SBOM

@@ -9,6 +9,7 @@ from execution_engine.agent.tools import GatewayToolClient, ToolClientStub
 from execution_engine.gateway_client import GatewayLlmClient
 from execution_engine.models import CommitRequest, Timing, Usage
 from execution_engine.orchestrator_client import EventManager, OrchestratorClient
+from execution_engine.reasoning_summary_events import ReasoningSummaryEventForwarder
 from execution_engine.run_registry import RunRegistry, RunState, RunStatus
 from execution_engine.util.logging import bind_log_context, logger, reset_log_context
 from execution_engine.util.metrics import (
@@ -59,7 +60,6 @@ class Worker:
                 if state.cancel_event.is_set() or state.status == RunStatus.CANCELLED:
                     asyncio.create_task(self.commit_queued_cancellation(state))
                 else:
-                    # Execute each run in its own concurrent task
                     state.task = asyncio.create_task(self.execute_run(state))
             self.registry.task_done()
             queued_runs.set(self.registry.queue_size)
@@ -122,6 +122,7 @@ class Worker:
         saw_tool_call = False
         observed_tool_calls = 0
         tool_result_events: list[dict[str, object]] = []
+        summary_events: ReasoningSummaryEventForwarder | None = None
         finish_cancelled: Callable[[], None] | None = None
 
         try:
@@ -154,7 +155,6 @@ class Worker:
             state.started_at = datetime.now(UTC)
             self.registry.persist_state(state)
 
-            # 1. Bootstrap: Get authoritative configuration
             emit_event("run_progress", {
                 "stage": "bootstrap",
                 "message": "Resolving run snapshot from control plane."
@@ -174,7 +174,6 @@ class Worker:
                 finish_cancelled_run()
                 return
 
-            # Validate scope match
             if (snapshot.scope.workspace_id != state.workspace_id or
                 snapshot.scope.target_id != state.target_id or
                 snapshot.scope.target_type != state.target_type or
@@ -201,7 +200,6 @@ class Worker:
                     "message": "Resuming run from a write approval decision."
                 })
             else:
-                # 2. Context Fetch: Get conversation history
                 emit_event("run_progress", {
                     "stage": "context_fetch",
                     "message": "Fetching conversation and target context."
@@ -228,7 +226,6 @@ class Worker:
                     "message": f"Context ready with {len(context.messages)} messages."
                 })
 
-                # 3. Lifecycle event
                 emit_event("run_started", {
                     "workspace_id": state.workspace_id,
                     "target_id": state.target_id,
@@ -236,15 +233,12 @@ class Worker:
                     "session_id": state.session_id
                 })
 
-            # 4. Agent Execution
             llm_client = GatewayLlmClient(
                 url=snapshot.llm.gateway.url,
                 token=snapshot.llm.gateway.token,
                 timeout_ms=snapshot.llm.gateway.request_timeout_ms or 60000
             )
 
-            # Decide which ToolClient to use.
-            # If tools are allowed in the snapshot, use the GatewayToolClient.
             if snapshot.tools.allowed_tools:
                 tool_client = GatewayToolClient(
                     url=snapshot.tools.gateway.url,
@@ -261,7 +255,6 @@ class Worker:
                     if isinstance(spec, dict) and spec.get("name")
                 }
             else:
-                # Fallback to stub if no tools allowed
                 tool_client = ToolClientStub()
                 tool_capabilities = {}
 
@@ -440,6 +433,12 @@ class Worker:
                 finish_cancelled_run()
                 return
 
+            summary_events = ReasoningSummaryEventForwarder(
+                snapshot.llm.provider,
+                snapshot.llm.model,
+                emit_event,
+            )
+
             emit_event("run_progress", {
                 "stage": "inference",
                 "message": f"Running {snapshot.llm.provider}/{snapshot.llm.model}."
@@ -462,10 +461,12 @@ class Worker:
                             break
 
                         if chunk["type"] == "delta":
+                            summary_events.flush(force=True)
                             text = chunk["text"]
                             full_text += text
                             emit_event("assistant_token_delta", {"text": text})
                         elif chunk["type"] == "tool_call":
+                            summary_events.flush(force=True)
                             if not saw_tool_call and full_text:
                                 # Drop speculative pre-tool text so persisted assistant output stays clean.
                                 full_text = ""
@@ -491,6 +492,7 @@ class Worker:
                                 "is_error": chunk["is_error"]
                             })
                         elif chunk["type"] == "approval_interrupt":
+                            summary_events.flush(force=True)
                             approval = await self.orchestrator_client.create_tool_approval(
                                 state.run_id,
                                 tool_call_id=chunk["call_id"],
@@ -522,11 +524,25 @@ class Worker:
                                         "message": message
                                     },
                                 )
+                        elif chunk["type"] == "reasoning_summary_delta":
+                            summary_events.add_delta(str(chunk.get("text") or ""))
+                        elif chunk["type"] == "reasoning_summary_completed":
+                            summary_events.complete(
+                                str(chunk.get("text") or ""),
+                                str(chunk.get("provider") or snapshot.llm.provider),
+                            )
+                        elif chunk["type"] == "reasoning_summary_unavailable":
+                            summary_events.unavailable(
+                                str(chunk.get("reason") or "provider_omitted"),
+                                str(chunk.get("provider") or snapshot.llm.provider),
+                            )
                         elif chunk["type"] == "final":
+                            summary_events.flush(force=True)
                             usage = Usage(**chunk["usage"])
                             if usage.tool_calls < observed_tool_calls:
                                 usage.tool_calls = observed_tool_calls
                         elif chunk["type"] == "error":
+                            summary_events.flush(force=True)
                             if state.cancel_event.is_set():
                                 finish_cancelled_run()
                                 return
@@ -558,6 +574,8 @@ class Worker:
             if state.cancel_event.is_set():
                 finish_cancelled_run()
             else:
+                if summary_events:
+                    summary_events.flush(force=True)
                 if usage.tool_calls < observed_tool_calls:
                     usage.tool_calls = observed_tool_calls
                 if not full_text.strip():

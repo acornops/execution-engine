@@ -8,11 +8,8 @@ line-length = 120
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["D102", "D103", "D107", "E", "F", "I", "W"]
+select = ["E", "F", "I", "W"]
 ignore = []
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["D102", "D103", "D107"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["execution_engine"]

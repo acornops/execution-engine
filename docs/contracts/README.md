@@ -87,7 +87,7 @@ Bootstrap response fields execution-engine relies on:
 - `scope.{workspace_id,target_id,target_type,session_id,run_id,user_id}`
 - `policy.{max_runtime_ms,max_output_tokens,budget_cents,max_steps,max_tool_calls,max_duplicate_tool_calls}`
 - `context.{endpoint,max_context_tokens}`
-- `llm.{provider,model,temperature,mode,gateway.{url,token,request_timeout_ms}}`
+- `llm.{provider,model,temperature,mode,reasoning.{summary_mode,effort},gateway.{url,token,request_timeout_ms}}`
 - `tools.{tool_registry_version,allowed_tools,tool_specs,gateway.{url,token},confirmation_required_for_write,approval_timeout_seconds}`
 - `routing`
 - `tracing`
@@ -121,6 +121,9 @@ Current event types emitted by this repo:
 - `run_started`
 - `assistant_message_started`
 - `assistant_token_delta`
+- `assistant_reasoning_summary_delta`
+- `assistant_reasoning_summary_completed`
+- `assistant_reasoning_summary_unavailable`
 - `tool_call_started`
 - `tool_call_completed`
 - `tool_approval_requested`
@@ -140,7 +143,7 @@ Commit request shape:
 
 - `status`
 - `assistant_message.{content,format}` with `format="markdown"`
-- `usage.{input_tokens,output_tokens,tool_calls}`
+- `usage.{input_tokens,output_tokens,tool_calls,reasoning_tokens?}`
 - `timing.{started_at,ended_at}`
 
 The control plane persists these events and mirrors them to the management console over replay and SSE, so event names and sequencing are externally visible contract.
@@ -154,7 +157,7 @@ Transport may be plaintext HTTP by default or HTTPS/mTLS when enabled by Helm
 
 Execution-engine calls:
 
-- `POST /api/v1/llm/chat-completions:stream`
+- `POST /api/v1/llm/generations:stream`
 
 with `Authorization: Bearer <run-scoped-jwt>` and body:
 
@@ -168,14 +171,20 @@ with `Authorization: Bearer <run-scoped-jwt>` and body:
 - `messages`
 - `temperature`
 - optional `max_output_tokens`
+- optional `reasoning.{summary_mode,effort}`
 - optional `tools[]`
 
 The gateway response is `application/x-ndjson` with one JSON object per line. Execution-engine depends on these event shapes:
 
 - `{"type":"delta","text":...}`
 - `{"type":"tool_call","call_id":...,"tool":...,"arguments":{...}}`
-- `{"type":"final","usage":{"input_tokens":...,"output_tokens":...,"tool_calls":...}}`
+- `{"type":"reasoning_summary_delta","text":...,"provider":...}`
+- `{"type":"reasoning_summary_completed","text":...,"provider":...}`
+- `{"type":"reasoning_summary_unavailable","provider":...,"reason":...}`
+- `{"type":"final","usage":{"input_tokens":...,"output_tokens":...,"tool_calls":...,"reasoning_tokens":...}}`
 - `{"type":"error","code":...,"message":...,"retryable":...}`
+
+Execution-engine forwards provider summary events as `assistant_reasoning_summary_*` run events. It keeps operational progress in `run_progress` and never mixes provider summaries into the final assistant markdown body.
 
 Local source development can enable deterministic streaming with
 `LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES=true` in llm-gateway. That mode is a

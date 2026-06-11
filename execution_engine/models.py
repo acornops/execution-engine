@@ -79,12 +79,18 @@ class GatewayConfig(BaseModel):
     token: str
     request_timeout_ms: Optional[int] = None
 
+class ReasoningConfig(BaseModel):
+    """Provider reasoning summary configuration frozen for a run."""
+    summary_mode: Literal["off", "auto", "concise", "detailed"] = "off"
+    effort: Literal["default", "low", "medium", "high"] = "default"
+
 class LLMConfig(BaseModel):
     """LLM provider and model configuration."""
     provider: str
     model: str
     temperature: float
     mode: str
+    reasoning: ReasoningConfig = Field(default_factory=ReasoningConfig)
     gateway: GatewayConfig
 
 class ToolConfig(BaseModel):
@@ -142,6 +148,7 @@ class Usage(BaseModel):
     input_tokens: int
     output_tokens: int
     tool_calls: int = 0
+    reasoning_tokens: Optional[int] = None
 
 class Timing(BaseModel):
     """Timing information for a run."""
@@ -192,6 +199,29 @@ class GatewayStreamToolCall(BaseModel):
     call_id: str
     tool: str
     arguments: Dict[str, Any]
+
+class GatewayStreamReasoningSummaryDelta(BaseModel):
+    """A provider-generated reasoning summary delta from the LLM gateway."""
+    type: Literal["reasoning_summary_delta"]
+    text: str
+    provider: str
+
+class GatewayStreamReasoningSummaryCompleted(BaseModel):
+    """A completed provider-generated reasoning summary from the LLM gateway."""
+    type: Literal["reasoning_summary_completed"]
+    text: str
+    provider: str
+
+class GatewayStreamReasoningSummaryUnavailable(BaseModel):
+    """A non-terminal event explaining why summaries are unavailable."""
+    type: Literal["reasoning_summary_unavailable"]
+    provider: str
+    reason: Literal[
+        "disabled",
+        "unsupported_model",
+        "unsupported_provider",
+        "provider_omitted",
+    ]
 
 class GatewayStreamFinal(BaseModel):
     """The final response from the LLM gateway containing usage info."""

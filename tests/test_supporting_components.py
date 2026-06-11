@@ -196,6 +196,7 @@ async def test_gateway_llm_client_streams_successful_chunks(monkeypatch: pytest.
     captured: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/llm/generations:stream"
         captured["payload"] = json.loads(request.content.decode())
         return httpx.Response(
             200,
@@ -214,7 +215,7 @@ async def test_gateway_llm_client_streams_successful_chunks(monkeypatch: pytest.
     client = GatewayLlmClient(url="http://gateway", token="token", timeout_ms=1234)
     chunks = [
         chunk
-        async for chunk in client.stream_chat_completions(
+        async for chunk in client.stream_generation(
             run_id="run-1",
             workspace_id="ws",
             target_id="cluster",
@@ -225,6 +226,7 @@ async def test_gateway_llm_client_streams_successful_chunks(monkeypatch: pytest.
             messages=[{"role": "user", "content": "hello"}],
             temperature=0.1,
             max_output_tokens=5,
+            reasoning={"summary_mode": "auto", "effort": "default"},
             tools=[{"name": "allowed_tool"}],
         )
     ]
@@ -244,6 +246,7 @@ async def test_gateway_llm_client_streams_successful_chunks(monkeypatch: pytest.
         "messages": [{"role": "user", "content": "hello"}],
         "temperature": 0.1,
         "max_output_tokens": 5,
+        "reasoning": {"summary_mode": "auto", "effort": "default"},
         "tools": [{"name": "allowed_tool"}],
     }
 
@@ -263,7 +266,7 @@ async def test_gateway_llm_client_returns_malformed_chunk_error(monkeypatch: pyt
     client = GatewayLlmClient(url="http://gateway", token="token")
     chunks = [
         chunk
-        async for chunk in client.stream_chat_completions(
+        async for chunk in client.stream_generation(
             run_id="run-1",
             workspace_id="ws",
             target_id="cluster",
@@ -303,11 +306,11 @@ async def test_gateway_llm_client_returns_malformed_chunk_error(monkeypatch: pyt
         (
             httpx.HTTPStatusError(
                 "bad gateway",
-                request=httpx.Request("POST", "http://gateway/api/v1/llm/chat-completions:stream"),
+                request=httpx.Request("POST", "http://gateway/api/v1/llm/generations:stream"),
                 response=httpx.Response(
                     503,
                     text="temporary outage",
-                    request=httpx.Request("POST", "http://gateway/api/v1/llm/chat-completions:stream"),
+                    request=httpx.Request("POST", "http://gateway/api/v1/llm/generations:stream"),
                 ),
             ),
             {
@@ -358,7 +361,7 @@ async def test_gateway_llm_client_maps_stream_failures(
     client = GatewayLlmClient(url="http://gateway", token="token")
     chunks = [
         chunk
-        async for chunk in client.stream_chat_completions(
+        async for chunk in client.stream_generation(
             run_id="run-1",
             workspace_id="ws",
             target_id="cluster",
