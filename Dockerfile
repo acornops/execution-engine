@@ -1,5 +1,7 @@
 FROM python:3.12.11-slim AS base
 
+ARG APT_CACHE_BUST=local
+
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
@@ -7,7 +9,8 @@ ENV LOG_LEVEL=INFO
 
 WORKDIR /app
 
-RUN apt-get update -qq \
+RUN echo "apt cache bust: ${APT_CACHE_BUST}" >/dev/null \
+    && apt-get update -qq \
     && apt-get upgrade -y -qq \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*

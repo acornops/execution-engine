@@ -1205,10 +1205,29 @@ class FakeStreamingLlmClient:
         self._streams = [list(stream) for stream in streams]
         self.calls: list[dict[str, object]] = []
 
-    async def stream_chat_completions(self, **kwargs):
+    async def stream_generation(self, **kwargs):
         self.calls.append(kwargs)
         for chunk in self._streams.pop(0):
             yield chunk
+
+
+class BlockingSummaryLlmClient:
+    def __init__(self):
+        self.release = asyncio.Event()
+        self.summary_yielded = asyncio.Event()
+        self.calls: list[dict[str, object]] = []
+
+    async def stream_generation(self, **kwargs):
+        self.calls.append(kwargs)
+        self.summary_yielded.set()
+        yield {
+            "type": "reasoning_summary_delta",
+            "text": "Checking workspace tools before deciding on the final answer.",
+            "provider": "openai",
+        }
+        await self.release.wait()
+        yield {"type": "delta", "text": "Final answer."}
+        yield {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 3, "tool_calls": 0}}
 
 
 class FakeToolClient:
@@ -1242,6 +1261,38 @@ async def test_react_engine_stream_iteration_stops_while_gateway_is_idle():
 
     with pytest.raises(StopAsyncIteration):
         await asyncio.wait_for(next_chunk, timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_react_engine_forwards_reasoning_summary_before_gateway_stream_finishes():
+    llm_client = BlockingSummaryLlmClient()
+    engine = ReActAgentEngine(
+        llm_client,
+        FakeToolClient(),
+        react_policy(max_steps=1, max_tool_calls=1),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f18d1"),
+    )
+    stream = engine.run(
+        [Message(role="user", content="What tools do you have?")],
+        llm_config(),
+        [{"name": "list_pods"}],
+        asyncio.Event(),
+    )
+
+    first = await asyncio.wait_for(anext(stream), timeout=0.5)
+    assert first["type"] == "reasoning"
+
+    summary = await asyncio.wait_for(anext(stream), timeout=0.5)
+    assert summary == {
+        "type": "reasoning_summary_delta",
+        "text": "Checking workspace tools before deciding on the final answer.",
+        "provider": "openai",
+    }
+    assert llm_client.summary_yielded.is_set()
+
+    llm_client.release.set()
+    remaining = [chunk async for chunk in stream]
+    assert remaining[-1]["type"] == "final"
 
 
 @pytest.mark.asyncio

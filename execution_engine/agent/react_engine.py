@@ -377,7 +377,7 @@ class ReActAgentEngine(AgentEngine):
                 }
 
             async for chunk in self._iterate_until_cancelled(
-                self.llm_client.stream_chat_completions(
+                self.llm_client.stream_generation(
                     run_id=self.scope.run_id,
                     workspace_id=self.scope.workspace_id,
                     target_id=self.scope.target_id,
@@ -388,6 +388,7 @@ class ReActAgentEngine(AgentEngine):
                     messages=llm_messages,
                     temperature=llm_config.temperature,
                     max_output_tokens=self.policy.max_output_tokens,
+                    reasoning=llm_config.reasoning.model_dump(),
                     tools=tool_specs,
                 ),
                 cancel_event,
@@ -403,8 +404,13 @@ class ReActAgentEngine(AgentEngine):
                     }
                     break
 
+                chunk_type = str(chunk.get("type") or "")
+                if chunk_type.startswith("reasoning_summary_"):
+                    yield chunk
+                    continue
+
                 buffered_chunks.append(chunk)
-                if chunk["type"] == "tool_call":
+                if chunk_type == "tool_call":
                     has_tool_calls = True
                     tool_calls.append(chunk)
 
@@ -464,7 +470,7 @@ class ReActAgentEngine(AgentEngine):
                 }
             )
             async for chunk in self._iterate_until_cancelled(
-                self.llm_client.stream_chat_completions(
+                self.llm_client.stream_generation(
                     run_id=self.scope.run_id,
                     workspace_id=self.scope.workspace_id,
                     target_id=self.scope.target_id,
@@ -475,6 +481,7 @@ class ReActAgentEngine(AgentEngine):
                     messages=llm_messages,
                     temperature=llm_config.temperature,
                     max_output_tokens=self.policy.max_output_tokens,
+                    reasoning=llm_config.reasoning.model_dump(),
                     tools=[],
                 ),
                 cancel_event,
