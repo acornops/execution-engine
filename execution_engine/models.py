@@ -272,6 +272,7 @@ class ToolApprovalRequest(BaseModel):
     """Request to create a human approval interrupt for a write tool call."""
     toolCallId: str
     toolName: str
+    summary: str | None = None
     arguments: Dict[str, Any] = {}
 
 class ToolApproval(BaseModel):
@@ -283,6 +284,7 @@ class ToolApproval(BaseModel):
     targetType: TargetType = Field(examples=TARGET_TYPE_EXAMPLES)
     toolCallId: str
     toolName: str
+    summary: str | None = None
     arguments: Dict[str, Any] = {}
     status: Literal["pending", "approved", "rejected", "expired"]
     executionStatus: Literal["not_started", "executing", "succeeded", "failed", "unknown"] = "not_started"

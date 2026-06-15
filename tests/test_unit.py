@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -15,6 +16,7 @@ import execution_engine.app as app_module
 import execution_engine.worker as worker_module
 from execution_engine.agent.react_engine import ReActAgentEngine
 from execution_engine.app import app
+from execution_engine.approval_summary import build_approval_summary
 from execution_engine.config import Settings, settings
 from execution_engine.durability import DurabilityStore
 from execution_engine.examples import (
@@ -337,6 +339,87 @@ async def test_orchestrator_client_reads_run_event_cursor():
 
     try:
         assert await client.get_run_event_cursor("r1") == 16
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_client_sends_approval_summary():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/internal/v1/runs/r1/approvals"
+        payload = json.loads(request.content.decode())
+        assert payload["summary"] == "Restart Deployment demo/api."
+        return httpx.Response(
+            201,
+            json={
+                "id": "approval-1",
+                "runId": "r1",
+                "workspaceId": EXAMPLE_WORKSPACE_ID,
+                "targetId": EXAMPLE_TARGET_ID,
+                "targetType": "kubernetes",
+                "toolCallId": "call-1",
+                "toolName": "restart_workload",
+                "summary": "Restart Deployment demo/api.",
+                "arguments": {"namespace": "demo", "name": "api", "kind": "Deployment"},
+                "status": "pending",
+                "executionStatus": "not_started",
+                "expiresAt": "2026-05-06T00:05:00.000Z",
+            },
+        )
+
+    client = OrchestratorClient()
+    await client.close()
+    client.base_url = "http://orchestrator"
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        approval = await client.create_tool_approval(
+            "r1",
+            tool_call_id="call-1",
+            tool_name="restart_workload",
+            arguments={"namespace": "demo", "name": "api", "kind": "Deployment"},
+            summary="Restart Deployment demo/api.",
+        )
+        assert approval.summary == "Restart Deployment demo/api."
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_client_omits_missing_approval_summary():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode())
+        assert "summary" not in payload
+        return httpx.Response(
+            201,
+            json={
+                "id": "approval-1",
+                "runId": "r1",
+                "workspaceId": EXAMPLE_WORKSPACE_ID,
+                "targetId": EXAMPLE_TARGET_ID,
+                "targetType": "kubernetes",
+                "toolCallId": "call-1",
+                "toolName": "restart_workload",
+                "arguments": {"namespace": "demo", "name": "api", "kind": "Deployment"},
+                "status": "pending",
+                "executionStatus": "not_started",
+                "expiresAt": "2026-05-06T00:05:00.000Z",
+            },
+        )
+
+    client = OrchestratorClient()
+    await client.close()
+    client.base_url = "http://orchestrator"
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        approval = await client.create_tool_approval(
+            "r1",
+            tool_call_id="call-1",
+            tool_name="restart_workload",
+            arguments={"namespace": "demo", "name": "api", "kind": "Deployment"},
+        )
+        assert approval.summary is None
     finally:
         await client.close()
 
@@ -1390,6 +1473,7 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
         targetType="kubernetes",
         toolCallId="call-1",
         toolName="restart_workload",
+        summary="Restart Deployment acornops-demo/web.",
         arguments={"namespace": "acornops-demo", "name": "web", "kind": "Deployment"},
         status="approved",
         executionStatus="not_started",
@@ -1477,6 +1561,11 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
     assert any(event.payload.get("stage") == "approval_resume" for event in resume_events)
     assert any(event.type == "tool_approval_approved" for event in resume_events)
     assert any(
+        event.type == "tool_approval_approved"
+        and event.payload["summary"] == "Restart Deployment acornops-demo/web."
+        for event in resume_events
+    )
+    assert any(
         event.type == "tool_call_started" and event.payload["tool"] == "restart_workload"
         for event in resume_events
     )
@@ -1486,6 +1575,128 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
     )
     assert state.status == RunStatus.COMPLETED
     client.consume_run_continuation.assert_awaited_once_with(state.run_id)
+
+
+@pytest.mark.asyncio
+async def test_worker_emits_approval_requested_summary(monkeypatch):
+    registry = RunRegistry(max_concurrent_runs=1, durability_store=durability_store())
+    state, _ = await registry.get_or_create(
+        EXAMPLE_WORKSPACE_ID,
+        EXAMPLE_TARGET_ID,
+        "kubernetes",
+        EXAMPLE_SESSION_ID,
+        "91db95f3-e9c3-4a12-921b-b46b5d1f17d4",
+        EXAMPLE_MESSAGE_ID,
+    )
+    snapshot = execution_snapshot(state.run_id, allowed_tools=["restart_workload"])
+    snapshot.tools.tool_specs = [{"name": "restart_workload", "capability": "write"}]
+    snapshot.tools.confirmation_required_for_write = True
+
+    approval = ToolApproval(
+        id="approval-1",
+        runId=state.run_id,
+        workspaceId=EXAMPLE_WORKSPACE_ID,
+        targetId=EXAMPLE_TARGET_ID,
+        targetType="kubernetes",
+        toolCallId="call-1",
+        toolName="restart_workload",
+        summary="Restart Deployment demo/api.",
+        arguments={"namespace": "demo", "name": "api", "kind": "Deployment"},
+        status="pending",
+        executionStatus="not_started",
+        expiresAt="2026-05-06T00:05:00.000Z",
+    )
+    client = MagicMock(spec=OrchestratorClient)
+    client.get_run_event_cursor = AsyncMock(return_value=0)
+    client.bootstrap = AsyncMock(return_value=snapshot)
+    client.get_run_continuation = AsyncMock(return_value=None)
+    client.get_context = AsyncMock(return_value=ContextPackage(messages=[Message(role="user", content="Restart api.")]))
+    client.create_tool_approval = AsyncMock(return_value=approval)
+    client.post_events = AsyncMock()
+    client.commit = AsyncMock()
+
+    monkeypatch.setattr(worker_module, "GatewayLlmClient", MagicMock())
+    monkeypatch.setattr(worker_module, "GatewayToolClient", MagicMock())
+    FakeReActAgentEngine.chunks = [
+        {
+            "type": "approval_interrupt",
+            "call_id": "call-1",
+            "tool": "restart_workload",
+            "summary": "Restart Deployment demo/api.",
+            "arguments": {"namespace": "demo", "name": "api", "kind": "Deployment"},
+            "continuation": {"pending_tool_call": {"call_id": "call-1", "tool": "restart_workload"}},
+        },
+    ]
+    monkeypatch.setattr(worker_module, "ReActAgentEngine", FakeReActAgentEngine)
+
+    worker = worker_module.Worker(registry, client)
+    await worker._do_execute_run(state)
+
+    client.create_tool_approval.assert_awaited_once()
+    assert client.create_tool_approval.await_args.kwargs["summary"] == "Restart Deployment demo/api."
+    assert any(
+        event.type == "tool_approval_requested" and event.payload["summary"] == "Restart Deployment demo/api."
+        for event in posted_events(client)
+    )
+    assert state.status == RunStatus.WAITING_FOR_APPROVAL
+
+
+@pytest.mark.asyncio
+async def test_worker_omits_missing_approval_requested_summary(monkeypatch):
+    registry = RunRegistry(max_concurrent_runs=1, durability_store=durability_store())
+    state, _ = await registry.get_or_create(
+        EXAMPLE_WORKSPACE_ID,
+        EXAMPLE_TARGET_ID,
+        "kubernetes",
+        EXAMPLE_SESSION_ID,
+        "91db95f3-e9c3-4a12-921b-b46b5d1f17d4",
+        EXAMPLE_MESSAGE_ID,
+    )
+    snapshot = execution_snapshot(state.run_id, allowed_tools=["restart_workload"])
+    snapshot.tools.tool_specs = [{"name": "restart_workload", "capability": "write"}]
+    snapshot.tools.confirmation_required_for_write = True
+
+    approval = ToolApproval(
+        id="approval-1",
+        runId=state.run_id,
+        workspaceId=EXAMPLE_WORKSPACE_ID,
+        targetId=EXAMPLE_TARGET_ID,
+        targetType="kubernetes",
+        toolCallId="call-1",
+        toolName="restart_workload",
+        arguments={"namespace": "demo", "name": "api", "kind": "Deployment"},
+        status="pending",
+        executionStatus="not_started",
+        expiresAt="2026-05-06T00:05:00.000Z",
+    )
+    client = MagicMock(spec=OrchestratorClient)
+    client.get_run_event_cursor = AsyncMock(return_value=0)
+    client.bootstrap = AsyncMock(return_value=snapshot)
+    client.get_run_continuation = AsyncMock(return_value=None)
+    client.get_context = AsyncMock(return_value=ContextPackage(messages=[Message(role="user", content="Restart api.")]))
+    client.create_tool_approval = AsyncMock(return_value=approval)
+    client.post_events = AsyncMock()
+    client.commit = AsyncMock()
+
+    monkeypatch.setattr(worker_module, "GatewayLlmClient", MagicMock())
+    monkeypatch.setattr(worker_module, "GatewayToolClient", MagicMock())
+    FakeReActAgentEngine.chunks = [
+        {
+            "type": "approval_interrupt",
+            "call_id": "call-1",
+            "tool": "restart_workload",
+            "arguments": {"namespace": "demo", "name": "api", "kind": "Deployment"},
+            "continuation": {"pending_tool_call": {"call_id": "call-1", "tool": "restart_workload"}},
+        },
+    ]
+    monkeypatch.setattr(worker_module, "ReActAgentEngine", FakeReActAgentEngine)
+
+    worker = worker_module.Worker(registry, client)
+    await worker._do_execute_run(state)
+
+    approval_event = next(event for event in posted_events(client) if event.type == "tool_approval_requested")
+    assert "summary" not in approval_event.payload
+    assert state.status == RunStatus.WAITING_FOR_APPROVAL
 
 
 @pytest.mark.asyncio
@@ -1615,8 +1826,23 @@ async def test_react_engine_interrupts_before_confirmed_write_tool():
     interrupts = [chunk for chunk in chunks if chunk["type"] == "approval_interrupt"]
     assert len(interrupts) == 1
     assert interrupts[0]["tool"] == "restart_workload"
+    assert interrupts[0]["summary"] == "Restart workload in namespace demo."
     assert interrupts[0]["continuation"]["pending_tool_call"]["call_id"] == "call-1"
     assert tool_client.calls == []
+
+
+def test_approval_summary_fallback_handles_unknown_tools_and_missing_name():
+    assert build_approval_summary(
+        "external.write_action",
+        {"namespace": "demo", "payload": {"large": "blob"}},
+    ) == "Run external write action against namespace demo."
+
+
+def test_approval_summary_preserves_zero_replica_scale():
+    assert build_approval_summary(
+        "scale_workload",
+        {"namespace": "demo", "name": "api", "kind": "Deployment", "replicas": 0},
+    ) == "Scale Deployment demo/api to 0 replicas."
 
 
 @pytest.mark.asyncio

@@ -94,7 +94,7 @@ Bootstrap response fields execution-engine relies on:
 
 Write approval resume contract:
 
-- `POST /internal/v1/runs/{runId}/approvals` stores the approval interrupt and serialized continuation.
+- `POST /internal/v1/runs/{runId}/approvals` stores the approval interrupt and serialized continuation. The request may include `summary`, a deterministic, human-readable sentence for approval UI copy.
 - `GET /internal/v1/runs/{runId}/continuation` returns the stored continuation plus current approval state.
 - `GET /internal/v1/runs/{runId}/event-cursor` returns `{ latestSeq }` from the control-plane replay source; execution-engine must seed resumed event emission from this cursor, while preserving any higher local durable outbox cursor, before emitting approval or tool-result events.
 - `POST /execution-started` claims an approved write before tool execution.
@@ -126,7 +126,7 @@ Current event types emitted by this repo:
 - `assistant_reasoning_summary_unavailable`
 - `tool_call_started`
 - `tool_call_completed`
-- `tool_approval_requested`
+- `tool_approval_requested` with `payload.summary?`
 - `tool_approval_approved`
 - `tool_approval_rejected`
 - `tool_approval_expired`

@@ -8,6 +8,7 @@ from typing import Any, AsyncGenerator, AsyncIterator, Dict, List
 
 from execution_engine.agent.engine import AgentEngine
 from execution_engine.agent.tools import ToolClient
+from execution_engine.approval_summary import build_approval_summary
 from execution_engine.gateway_client import GatewayLlmClient
 from execution_engine.models import LLMConfig, Message, Policy, Scope
 
@@ -320,6 +321,7 @@ class ReActAgentEngine(AgentEngine):
                             "type": "approval_interrupt",
                             "call_id": call_id,
                             "tool": tool_name,
+                            "summary": build_approval_summary(str(tool_name), arguments),
                             "arguments": arguments,
                             "continuation": self._build_continuation_state(
                                 llm_messages=llm_messages,
