@@ -7,7 +7,7 @@ from typing import Callable
 from execution_engine.agent.react_engine import ReActAgentEngine
 from execution_engine.agent.tools import GatewayToolClient, ToolClientStub
 from execution_engine.gateway_client import GatewayLlmClient
-from execution_engine.models import CommitRequest, Timing, Usage
+from execution_engine.models import CommitRequest, Timing, ToolApproval, Usage
 from execution_engine.orchestrator_client import EventManager, OrchestratorClient
 from execution_engine.reasoning_summary_events import ReasoningSummaryEventForwarder
 from execution_engine.run_registry import RunRegistry, RunState, RunStatus
@@ -116,7 +116,6 @@ class Worker:
         tool_client = None
         continuation = None
         suspended_for_approval = False
-
         full_text = ""
         usage = Usage(input_tokens=0, output_tokens=0)
         saw_tool_call = False
@@ -134,6 +133,14 @@ class Worker:
                 if state.cancel_event.is_set() and event_type != "run_cancelled":
                     return
                 event_manager.emit(event_type, payload)
+
+            def approval_event_payload(approval: ToolApproval) -> dict[str, object]:
+                payload: dict[str, object] = {
+                    "approval_id": approval.id,
+                    "tool_call_id": approval.toolCallId,
+                    "tool": approval.toolName,
+                }
+                return payload | ({"summary": approval.summary} if approval.summary is not None else {})
 
             def finish_cancelled_run() -> None:
                 nonlocal cancel_event_emitted
@@ -400,11 +407,7 @@ class Worker:
                     "expired": "tool_approval_expired",
                 }.get(approval.status)
                 if event_type:
-                    emit_event(event_type, {
-                        "approval_id": approval.id,
-                        "tool_call_id": approval.toolCallId,
-                        "tool": approval.toolName,
-                    })
+                    emit_event(event_type, approval_event_payload(approval))
                 if unknown_write_outcome:
                     full_text = (
                         "The approved write action may have started, but AcornOps did not record a final result. "
@@ -497,6 +500,7 @@ class Worker:
                                 state.run_id,
                                 tool_call_id=chunk["call_id"],
                                 tool_name=chunk["tool"],
+                                summary=chunk.get("summary"),
                                 arguments=chunk["arguments"],
                                 continuation=chunk["continuation"],
                             )
@@ -504,9 +508,7 @@ class Worker:
                                 finish_cancelled_run()
                                 return
                             emit_event("tool_approval_requested", {
-                                "approval_id": approval.id,
-                                "tool_call_id": approval.toolCallId,
-                                "tool": approval.toolName,
+                                **approval_event_payload(approval),
                                 "arguments": approval.arguments,
                                 "expires_at": approval.expiresAt,
                             })

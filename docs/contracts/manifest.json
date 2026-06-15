@@ -31,6 +31,7 @@
       ],
       "contextFields": ["messages", "summaries", "attachments"],
       "eventFrameFields": ["schema_version", "run_id", "seq", "ts", "type", "payload"],
+      "approvalRequestFields": ["toolCallId", "toolName", "summary?", "arguments", "continuation?"],
       "eventTypes": [
         "run_progress",
         "run_started",

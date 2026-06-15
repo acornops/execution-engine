@@ -133,12 +133,13 @@ class OrchestratorClient:
         tool_call_id: str,
         tool_name: str,
         arguments: Dict[str, Any],
+        summary: str | None = None,
         continuation: Dict[str, Any] | None = None,
     ) -> ToolApproval:
         """Creates or returns a pending approval interrupt for a write tool call."""
         url = f"{self.base_url}{INTERNAL_CONTROL_PLANE_PREFIX}/runs/{run_id}/approvals"
-        payload = ToolApprovalRequest(toolCallId=tool_call_id, toolName=tool_name, arguments=arguments)
-        body = payload.model_dump()
+        payload = ToolApprovalRequest(toolCallId=tool_call_id, toolName=tool_name, summary=summary, arguments=arguments)
+        body = payload.model_dump(exclude_none=True)
         if continuation is not None:
             body["continuation"] = continuation
         response = await self.client.post(
