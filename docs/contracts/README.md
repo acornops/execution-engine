@@ -127,9 +127,9 @@ Current event types emitted by this repo:
 - `tool_call_started`
 - `tool_call_completed`
 - `tool_approval_requested` with `payload.summary?`
-- `tool_approval_approved`
-- `tool_approval_rejected`
-- `tool_approval_expired`
+- `tool_approval_approved` with `payload.summary?`
+- `tool_approval_rejected` with `payload.summary?`
+- `tool_approval_expired` with `payload.summary?`
 - `assistant_message_completed`
 - `run_failed`
 - `run_cancelled`

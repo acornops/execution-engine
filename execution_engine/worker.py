@@ -140,7 +140,7 @@ class Worker:
                     "tool_call_id": approval.toolCallId,
                     "tool": approval.toolName,
                 }
-                return payload | ({"summary": approval.summary} if approval.summary else {})
+                return payload | ({"summary": approval.summary} if approval.summary is not None else {})
 
             def finish_cancelled_run() -> None:
                 nonlocal cancel_event_emitted
