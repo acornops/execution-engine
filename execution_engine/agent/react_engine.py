@@ -25,6 +25,7 @@ class ReActAgentEngine(AgentEngine):
         scope: Scope,
         tool_capabilities: Dict[str, str] | None = None,
         confirmation_required_for_write: bool = False,
+        write_unavailable_reason: str | None = None,
     ):
         """
         Initializes the ReAct engine.
@@ -41,6 +42,7 @@ class ReActAgentEngine(AgentEngine):
         self.scope = scope
         self.tool_capabilities = tool_capabilities or {}
         self.confirmation_required_for_write = confirmation_required_for_write
+        self.write_unavailable_reason = write_unavailable_reason
 
     @staticmethod
     async def _iterate_until_cancelled(
@@ -152,6 +154,23 @@ class ReActAgentEngine(AgentEngine):
             }
         )
 
+    @staticmethod
+    def _write_unavailable_instruction(reason: str | None) -> str | None:
+        if reason == "run_read_only":
+            return (
+                "Write-capable tools are unavailable for this run because the current user/session is read-only. "
+                "If the user asks to restart, scale, patch, delete, or otherwise mutate target resources, explain "
+                "that their role cannot start write-capable assistant runs. Continue with read-only checks when useful."
+            )
+        if reason == "agent_write_disabled":
+            return (
+                "Write-capable tools are unavailable for this target because the connected agent is running in "
+                "read-only mode. If the user asks to restart, scale, patch, delete, or otherwise mutate target "
+                "resources, explain that the target agent must be upgraded with write mode enabled. Continue with "
+                "read-only checks when useful."
+            )
+        return None
+
     def _build_continuation_state(
         self,
         *,
@@ -212,6 +231,9 @@ class ReActAgentEngine(AgentEngine):
             tool_feedback_blocks: List[str] = []
             pending_tool_feedback = False
             llm_messages = [{"role": m.role, "content": m.content} for m in messages]
+            write_unavailable_instruction = self._write_unavailable_instruction(self.write_unavailable_reason)
+            if write_unavailable_instruction:
+                llm_messages.insert(0, {"role": "system", "content": write_unavailable_instruction})
             request_preview = self._summarize_user_request(llm_messages)
             if request_preview:
                 yield {

@@ -98,6 +98,7 @@ class ToolConfig(BaseModel):
     tool_registry_version: str
     allowed_tools: List[str]
     tool_specs: List[Dict[str, Any]] = []
+    write_unavailable_reason: Optional[str] = None
     confirmation_required_for_write: bool = True
     approval_timeout_seconds: int = 300
     gateway: GatewayConfig

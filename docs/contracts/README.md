@@ -88,7 +88,7 @@ Bootstrap response fields execution-engine relies on:
 - `policy.{max_runtime_ms,max_output_tokens,budget_cents,max_steps,max_tool_calls,max_duplicate_tool_calls}`
 - `context.{endpoint,max_context_tokens}`
 - `llm.{provider,model,temperature,mode,reasoning.{summary_mode,effort},gateway.{url,token,request_timeout_ms}}`
-- `tools.{tool_registry_version,allowed_tools,tool_specs,gateway.{url,token},confirmation_required_for_write,approval_timeout_seconds}`
+- `tools.{tool_registry_version,allowed_tools,tool_specs,write_unavailable_reason?,gateway.{url,token},confirmation_required_for_write,approval_timeout_seconds}`. `write_unavailable_reason` is optional explanatory context for the assistant when configured write tools are absent from a read-only run or a read-only agent target; unknown values are ignored, and execution must still treat `allowed_tools` and the run JWT as authoritative.
 - `routing`
 - `tracing`
 
