@@ -1086,6 +1086,15 @@ def execution_snapshot(run_id: str, *, allowed_tools: list[str] | None = None) -
     )
 
 
+def test_execution_snapshot_accepts_unknown_write_unavailable_reason():
+    payload = execution_snapshot("91db95f3-e9c3-4a12-921b-b46b5d1f17d1").model_dump()
+    payload["tools"]["write_unavailable_reason"] = "future_control_plane_reason"
+
+    snapshot = ExecutionSnapshot.model_validate(payload)
+
+    assert snapshot.tools.write_unavailable_reason == "future_control_plane_reason"
+
+
 class FakeReActAgentEngine:
     def __init__(self, *_args, **_kwargs):
         self._chunks = list(self.__class__.chunks)
@@ -1916,6 +1925,38 @@ async def test_react_engine_adds_write_unavailable_context_for_read_only_agents(
     assert messages[0]["role"] == "system"
     assert "connected agent is running in read-only mode" in messages[0]["content"]
     assert "agent must be upgraded with write mode enabled" in messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_react_engine_ignores_unknown_write_unavailable_reason():
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {"type": "delta", "text": "I can run read checks."},
+                {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 7, "tool_calls": 0}},
+            ],
+        ]
+    )
+    engine = ReActAgentEngine(
+        llm_client,
+        FakeToolClient(),
+        react_policy(max_steps=1, max_tool_calls=1),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f17e5"),
+        write_unavailable_reason="future_control_plane_reason",
+    )
+
+    _ = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Check deployment status.")],
+            llm_config(),
+            [{"name": "list_pods"}],
+            asyncio.Event(),
+        )
+    ]
+
+    messages = llm_client.calls[0]["messages"]
+    assert messages[0] == {"role": "user", "content": "Check deployment status."}
 
 
 @pytest.mark.asyncio
