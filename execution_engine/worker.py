@@ -430,8 +430,8 @@ class Worker:
                 snapshot.scope,
                 tool_capabilities=tool_capabilities,
                 confirmation_required_for_write=snapshot.tools.confirmation_required_for_write,
+                write_unavailable_reason=snapshot.tools.write_unavailable_reason,
             )
-
             if state.cancel_event.is_set():
                 finish_cancelled_run()
                 return

@@ -1850,6 +1850,75 @@ async def test_react_engine_limits_tool_budget_to_remaining_calls():
 
 
 @pytest.mark.asyncio
+async def test_react_engine_adds_write_unavailable_context_for_read_only_runs():
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {"type": "delta", "text": "Your role cannot start write-capable assistant runs."},
+                {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 7, "tool_calls": 0}},
+            ],
+        ]
+    )
+    engine = ReActAgentEngine(
+        llm_client,
+        FakeToolClient(),
+        react_policy(max_steps=1, max_tool_calls=1),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f17e3"),
+        write_unavailable_reason="run_read_only",
+    )
+
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Restart the workload.")],
+            llm_config(),
+            [{"name": "list_pods"}],
+            asyncio.Event(),
+        )
+    ]
+
+    assert any(chunk["type"] == "delta" and "role cannot start" in chunk["text"] for chunk in chunks)
+    messages = llm_client.calls[0]["messages"]
+    assert messages[0]["role"] == "system"
+    assert "current user/session is read-only" in messages[0]["content"]
+    assert "role cannot start write-capable assistant runs" in messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_react_engine_adds_write_unavailable_context_for_read_only_agents():
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {"type": "delta", "text": "The target agent must be upgraded with write mode enabled."},
+                {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 7, "tool_calls": 0}},
+            ],
+        ]
+    )
+    engine = ReActAgentEngine(
+        llm_client,
+        FakeToolClient(),
+        react_policy(max_steps=1, max_tool_calls=1),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f17e4"),
+        write_unavailable_reason="agent_write_disabled",
+    )
+
+    _ = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Scale the deployment.")],
+            llm_config(),
+            [{"name": "list_pods"}],
+            asyncio.Event(),
+        )
+    ]
+
+    messages = llm_client.calls[0]["messages"]
+    assert messages[0]["role"] == "system"
+    assert "connected agent is running in read-only mode" in messages[0]["content"]
+    assert "agent must be upgraded with write mode enabled" in messages[0]["content"]
+
+
+@pytest.mark.asyncio
 async def test_react_engine_interrupts_before_confirmed_write_tool():
     llm_client = FakeStreamingLlmClient(
         streams=[
