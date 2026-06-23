@@ -34,14 +34,19 @@ class GatewayLlmClient:
         self,
         run_id: str,
         workspace_id: str,
-        target_id: str,
-        target_type: str,
+        target_id: str | None,
+        target_type: str | None,
         session_id: str,
         provider: str,
         model: str,
         messages: List[Dict[str, str]],
         temperature: float,
         max_output_tokens: int | None,
+        scope_type: str = "target",
+        workflow_id: str | None = None,
+        workflow_run_id: str | None = None,
+        workflow_session_id: str | None = None,
+        workflow_step_id: str | None = None,
         reasoning: Dict[str, str] | None = None,
         tools: List[Dict[str, Any]] | None = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
@@ -68,14 +73,25 @@ class GatewayLlmClient:
         payload = {
             "run_id": run_id,
             "workspace_id": workspace_id,
-            "target_id": target_id,
-            "target_type": target_type,
+            "scope": {"type": scope_type},
             "session_id": session_id,
             "provider": provider,
             "model": model,
             "messages": messages,
             "temperature": temperature,
         }
+        if target_id is not None:
+            payload["target_id"] = target_id
+        if target_type is not None:
+            payload["target_type"] = target_type
+        if workflow_id is not None:
+            payload["workflow_id"] = workflow_id
+        if workflow_run_id is not None:
+            payload["workflow_run_id"] = workflow_run_id
+        if workflow_session_id is not None:
+            payload["workflow_session_id"] = workflow_session_id
+        if workflow_step_id is not None:
+            payload["workflow_step_id"] = workflow_step_id
         if max_output_tokens is not None:
             payload["max_output_tokens"] = max_output_tokens
         if reasoning:

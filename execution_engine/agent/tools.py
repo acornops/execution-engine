@@ -56,10 +56,15 @@ class GatewayToolClient(ToolClient):
         url: str,
         token: str,
         workspace_id: str,
-        target_id: str,
-        target_type: str,
+        target_id: str | None,
+        target_type: str | None,
         run_id: str,
         allowed_tools: Iterable[str],
+        scope_type: str = "target",
+        workflow_id: str | None = None,
+        workflow_run_id: str | None = None,
+        workflow_session_id: str | None = None,
+        workflow_step_id: str | None = None,
     ):
         """Initialize a run-scoped tool gateway client."""
         self.url = url
@@ -68,6 +73,11 @@ class GatewayToolClient(ToolClient):
         self.target_id = target_id
         self.target_type = target_type
         self.run_id = run_id
+        self.scope_type = scope_type
+        self.workflow_id = workflow_id
+        self.workflow_run_id = workflow_run_id
+        self.workflow_session_id = workflow_session_id
+        self.workflow_step_id = workflow_step_id
         self.allowed_tools = set(allowed_tools)
         self.headers = {"Authorization": f"Bearer {self.token}"}
         self._client = httpx.AsyncClient(
@@ -99,8 +109,13 @@ class GatewayToolClient(ToolClient):
         payload = ToolCallRequest(
             run_id=self.run_id,
             workspace_id=self.workspace_id,
+            scope={"type": self.scope_type},
             target_id=self.target_id,
             target_type=self.target_type,
+            workflow_id=self.workflow_id,
+            workflow_run_id=self.workflow_run_id,
+            workflow_session_id=self.workflow_session_id,
+            workflow_step_id=self.workflow_step_id,
             tool=tool_name,
             arguments=arguments
         )

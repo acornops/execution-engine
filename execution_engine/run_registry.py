@@ -23,7 +23,9 @@ class RunStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
-RunKey = Tuple[str, str, str, str, str, str]  # (workspace_id, target_id, target_type, session_id, message_id, run_id)
+RunKey = Tuple[str, str, Optional[str], Optional[str], str, str, str, Optional[str], Optional[str], Optional[str], Optional[str]]
+# (scope_type, workspace_id, target_id, target_type, session_id, message_id, run_id,
+#  workflow_id, workflow_run_id, workflow_session_id, workflow_step_id)
 
 class RunState:
     """
@@ -49,19 +51,29 @@ class RunState:
     def __init__(
         self,
         workspace_id: str,
-        target_id: str,
-        target_type: str,
+        target_id: Optional[str],
+        target_type: Optional[str],
         session_id: str,
         run_id: str,
         message_id: str,
+        scope_type: str = "target",
+        workflow_id: Optional[str] = None,
+        workflow_run_id: Optional[str] = None,
+        workflow_session_id: Optional[str] = None,
+        workflow_step_id: Optional[str] = None,
     ):
         """Initialize a queued run state."""
         self.workspace_id = workspace_id
+        self.scope_type = scope_type
         self.target_id = target_id
         self.target_type = target_type
         self.session_id = session_id
         self.run_id = run_id
         self.message_id = message_id
+        self.workflow_id = workflow_id
+        self.workflow_run_id = workflow_run_id
+        self.workflow_session_id = workflow_session_id
+        self.workflow_step_id = workflow_step_id
 
         self.status = RunStatus.QUEUED
         self.created_at = datetime.now(UTC)
@@ -78,12 +90,17 @@ class RunState:
     def identity_key(self) -> RunKey:
         """Returns the full idempotency identity for this run."""
         return (
+            self.scope_type,
             self.workspace_id,
             self.target_id,
             self.target_type,
             self.session_id,
             self.message_id,
             self.run_id,
+            self.workflow_id,
+            self.workflow_run_id,
+            self.workflow_session_id,
+            self.workflow_step_id,
         )
 
 class RunRegistry:
@@ -116,11 +133,16 @@ class RunRegistry:
     async def get_or_create(
         self,
         workspace_id: str,
-        target_id: str,
-        target_type: str,
+        target_id: Optional[str],
+        target_type: Optional[str],
         session_id: str,
         run_id: str,
-        message_id: str
+        message_id: str,
+        scope_type: str = "target",
+        workflow_id: Optional[str] = None,
+        workflow_run_id: Optional[str] = None,
+        workflow_session_id: Optional[str] = None,
+        workflow_step_id: Optional[str] = None,
     ) -> Tuple[RunState, bool]:
         """
         Gets an existing run or creates a new one if it doesn't exist.
@@ -139,7 +161,19 @@ class RunRegistry:
         Raises:
             ValueError: If run_id already exists but with a different scope.
         """
-        key = (workspace_id, target_id, target_type, session_id, message_id, run_id)
+        key = (
+            scope_type,
+            workspace_id,
+            target_id,
+            target_type,
+            session_id,
+            message_id,
+            run_id,
+            workflow_id,
+            workflow_run_id,
+            workflow_session_id,
+            workflow_step_id,
+        )
         async with self._lock:
             if run_id in self._run_id_to_key:
                 existing_key = self._run_id_to_key[run_id]
@@ -151,12 +185,17 @@ class RunRegistry:
                 persisted = self.durability_store.get_run(run_id)
                 if persisted:
                     persisted_key = (
+                        getattr(persisted, "scope_type", "target"),
                         persisted.workspace_id,
                         persisted.target_id,
                         persisted.target_type,
                         persisted.session_id,
                         persisted.message_id,
                         persisted.run_id,
+                        getattr(persisted, "workflow_id", None),
+                        getattr(persisted, "workflow_run_id", None),
+                        getattr(persisted, "workflow_session_id", None),
+                        getattr(persisted, "workflow_step_id", None),
                     )
                     if persisted_key != key:
                         raise ValueError(f"Run ID {run_id} already exists with different identity")
@@ -165,7 +204,19 @@ class RunRegistry:
                     self._run_id_to_key[run_id] = key
                     return state, False
 
-            state = RunState(workspace_id, target_id, target_type, session_id, run_id, message_id)
+            state = RunState(
+                workspace_id,
+                target_id,
+                target_type,
+                session_id,
+                run_id,
+                message_id,
+                scope_type=scope_type,
+                workflow_id=workflow_id,
+                workflow_run_id=workflow_run_id,
+                workflow_session_id=workflow_session_id,
+                workflow_step_id=workflow_step_id,
+            )
             if self.durability_store:
                 reserved = self.durability_store.reserve_run(
                     workspace_id=state.workspace_id,
@@ -174,6 +225,11 @@ class RunRegistry:
                     session_id=state.session_id,
                     run_id=state.run_id,
                     message_id=state.message_id,
+                    scope_type=state.scope_type,
+                    workflow_id=state.workflow_id,
+                    workflow_run_id=state.workflow_run_id,
+                    workflow_session_id=state.workflow_session_id,
+                    workflow_step_id=state.workflow_step_id,
                     status=state.status.value,
                     created_at=state.created_at,
                 )
@@ -182,12 +238,17 @@ class RunRegistry:
                     if persisted is None:
                         raise ValueError(f"Run ID {run_id} could not be reserved")
                     persisted_key = (
+                        getattr(persisted, "scope_type", "target"),
                         persisted.workspace_id,
                         persisted.target_id,
                         persisted.target_type,
                         persisted.session_id,
                         persisted.message_id,
                         persisted.run_id,
+                        getattr(persisted, "workflow_id", None),
+                        getattr(persisted, "workflow_run_id", None),
+                        getattr(persisted, "workflow_session_id", None),
+                        getattr(persisted, "workflow_step_id", None),
                     )
                     if persisted_key != key:
                         raise ValueError(f"Run ID {run_id} already exists with different identity")
@@ -215,6 +276,11 @@ class RunRegistry:
             persisted.session_id,
             persisted.run_id,
             persisted.message_id,
+            scope_type=getattr(persisted, "scope_type", "target"),
+            workflow_id=getattr(persisted, "workflow_id", None),
+            workflow_run_id=getattr(persisted, "workflow_run_id", None),
+            workflow_session_id=getattr(persisted, "workflow_session_id", None),
+            workflow_step_id=getattr(persisted, "workflow_step_id", None),
         )
         state.status = RunStatus(persisted.status)
         state.created_at = persisted.created_at
@@ -273,6 +339,11 @@ class RunRegistry:
             session_id=state.session_id,
             run_id=state.run_id,
             message_id=state.message_id,
+            scope_type=state.scope_type,
+            workflow_id=state.workflow_id,
+            workflow_run_id=state.workflow_run_id,
+            workflow_session_id=state.workflow_session_id,
+            workflow_step_id=state.workflow_step_id,
             status=state.status.value,
             created_at=state.created_at,
             started_at=state.started_at,
@@ -346,6 +417,11 @@ class RunRegistry:
                 persisted.session_id,
                 persisted.run_id,
                 persisted.message_id,
+                scope_type=persisted.scope_type,
+                workflow_id=persisted.workflow_id,
+                workflow_run_id=persisted.workflow_run_id,
+                workflow_session_id=persisted.workflow_session_id,
+                workflow_step_id=persisted.workflow_step_id,
             )
             state.status = RunStatus.FAILED
             state.created_at = persisted.created_at

@@ -181,10 +181,27 @@ class Worker:
                 finish_cancelled_run()
                 return
 
-            if (snapshot.scope.workspace_id != state.workspace_id or
-                snapshot.scope.target_id != state.target_id or
-                snapshot.scope.target_type != state.target_type or
-                snapshot.scope.session_id != state.session_id):
+            scope_matches = (
+                snapshot.scope.workspace_id == state.workspace_id
+                and snapshot.scope.session_id == state.session_id
+                and snapshot.scope.type == state.scope_type
+            )
+            if state.scope_type == "workspace":
+                scope_matches = scope_matches and (
+                    snapshot.scope.workflow_id == state.workflow_id
+                    and snapshot.scope.workflow_run_id == state.workflow_run_id
+                    and snapshot.scope.workflow_session_id == state.workflow_session_id
+                    and snapshot.scope.workflow_step_id == state.workflow_step_id
+                    and snapshot.scope.target_id == state.target_id
+                    and snapshot.scope.target_type == state.target_type
+                )
+            else:
+                scope_matches = scope_matches and (
+                    snapshot.scope.target_id == state.target_id
+                    and snapshot.scope.target_type == state.target_type
+                )
+
+            if not scope_matches:
 
                 logger.error(f"Scope mismatch for run {state.run_id}")
                 emit_event("run_failed", {
@@ -255,6 +272,11 @@ class Worker:
                     target_type=state.target_type,
                     run_id=state.run_id,
                     allowed_tools=snapshot.tools.allowed_tools,
+                    scope_type=state.scope_type,
+                    workflow_id=state.workflow_id,
+                    workflow_run_id=state.workflow_run_id,
+                    workflow_session_id=state.workflow_session_id,
+                    workflow_step_id=state.workflow_step_id,
                 )
                 tool_capabilities = {
                     str(spec.get("name")): "write" if spec.get("capability") == "write" else "read"

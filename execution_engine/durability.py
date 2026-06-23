@@ -102,11 +102,16 @@ class PersistedRun:
     """Run state persisted across execution-engine process restarts."""
 
     workspace_id: str
-    target_id: str
-    target_type: str
+    target_id: str | None
+    target_type: str | None
     session_id: str
     run_id: str
     message_id: str
+    scope_type: str
+    workflow_id: str | None
+    workflow_run_id: str | None
+    workflow_session_id: str | None
+    workflow_step_id: str | None
     status: str
     created_at: datetime
     started_at: datetime | None
@@ -174,11 +179,16 @@ class DurabilityStore:
         value = json.loads(raw)
         return PersistedRun(
             workspace_id=value["workspace_id"],
-            target_id=value["target_id"],
-            target_type=value["target_type"],
+            target_id=value.get("target_id"),
+            target_type=value.get("target_type"),
             session_id=value["session_id"],
             run_id=value["run_id"],
             message_id=value["message_id"],
+            scope_type=value.get("scope_type", "target"),
+            workflow_id=value.get("workflow_id"),
+            workflow_run_id=value.get("workflow_run_id"),
+            workflow_session_id=value.get("workflow_session_id"),
+            workflow_step_id=value.get("workflow_step_id"),
             status=value["status"],
             created_at=_parse_iso(value.get("created_at")) or datetime.now(UTC),
             started_at=_parse_iso(value.get("started_at")),
@@ -189,11 +199,16 @@ class DurabilityStore:
         self,
         *,
         workspace_id: str,
-        target_id: str,
-        target_type: str,
+        target_id: str | None,
+        target_type: str | None,
         session_id: str,
         run_id: str,
         message_id: str,
+        scope_type: str = "target",
+        workflow_id: str | None = None,
+        workflow_run_id: str | None = None,
+        workflow_session_id: str | None = None,
+        workflow_step_id: str | None = None,
         status: str,
         created_at: datetime,
     ) -> bool:
@@ -206,6 +221,11 @@ class DurabilityStore:
                 "session_id": session_id,
                 "run_id": run_id,
                 "message_id": message_id,
+                "scope_type": scope_type,
+                "workflow_id": workflow_id,
+                "workflow_run_id": workflow_run_id,
+                "workflow_session_id": workflow_session_id,
+                "workflow_step_id": workflow_step_id,
                 "status": status,
                 "created_at": _to_iso(created_at),
                 "started_at": None,
@@ -232,11 +252,16 @@ class DurabilityStore:
         self,
         *,
         workspace_id: str,
-        target_id: str,
-        target_type: str,
+        target_id: str | None,
+        target_type: str | None,
         session_id: str,
         run_id: str,
         message_id: str,
+        scope_type: str = "target",
+        workflow_id: str | None = None,
+        workflow_run_id: str | None = None,
+        workflow_session_id: str | None = None,
+        workflow_step_id: str | None = None,
         status: str,
         created_at: datetime,
         started_at: datetime | None,
@@ -254,6 +279,11 @@ class DurabilityStore:
                     "session_id": session_id,
                     "run_id": run_id,
                     "message_id": message_id,
+                    "scope_type": scope_type,
+                    "workflow_id": workflow_id,
+                    "workflow_run_id": workflow_run_id,
+                    "workflow_session_id": workflow_session_id,
+                    "workflow_step_id": workflow_step_id,
                     "status": status,
                     "created_at": _to_iso(created_at),
                     "started_at": _to_iso(started_at) if started_at else None,
@@ -274,11 +304,16 @@ class DurabilityStore:
             runs.append(
                 PersistedRun(
                     workspace_id=value["workspace_id"],
-                    target_id=value["target_id"],
-                    target_type=value["target_type"],
+                    target_id=value.get("target_id"),
+                    target_type=value.get("target_type"),
                     session_id=value["session_id"],
                     run_id=value["run_id"],
                     message_id=value["message_id"],
+                    scope_type=value.get("scope_type", "target"),
+                    workflow_id=value.get("workflow_id"),
+                    workflow_run_id=value.get("workflow_run_id"),
+                    workflow_session_id=value.get("workflow_session_id"),
+                    workflow_step_id=value.get("workflow_step_id"),
                     status=value["status"],
                     created_at=_parse_iso(value.get("created_at")) or datetime.now(UTC),
                     started_at=_parse_iso(value.get("started_at")),

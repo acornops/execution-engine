@@ -55,8 +55,12 @@ for field in (
     "contract_version: int = 1",
     "run_id: str",
     "workspace_id: str",
-    "target_id: str",
-    "target_type: TargetType = Field(examples=TARGET_TYPE_EXAMPLES)",
+    'scope_type: Literal["target", "workspace"] = "target"',
+    "target_id: Optional[str] = Field(default=None, examples=[EXAMPLE_TARGET_ID])",
+    "target_type: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)",
+    "workflow_id: Optional[str] = None",
+    "workflow_run_id: Optional[str] = None",
+    "workflow_session_id: Optional[str] = None",
     "session_id: str",
     "message_id: str",
     "requested_at: datetime",
@@ -76,6 +80,12 @@ for field in (
     "class ToolCallRequest",
     "tool: str",
     "arguments: Dict[str, Any]",
+    "class ToolApproval",
+    "targetId: Optional[str] = None",
+    "targetType: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)",
+    "workflowId: Optional[str] = None",
+    "workflowRunId: Optional[str] = None",
+    "workflowSessionId: Optional[str] = None",
 ):
     expect_in(MODELS_SOURCE, field, "Model contract")
 

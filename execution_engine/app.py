@@ -193,6 +193,11 @@ async def start_run(request: RunRequest) -> Response:
             target_id=request.target_id,
             target_type=request.target_type,
             session_id=request.session_id,
+            scope_type=request.scope_type,
+            workflow_id=request.workflow_id,
+            workflow_run_id=request.workflow_run_id,
+            workflow_session_id=request.workflow_session_id,
+            workflow_step_id=request.workflow_step_id,
         )
         state, created = await registry.get_or_create(
             workspace_id=request.workspace_id,
@@ -201,6 +206,11 @@ async def start_run(request: RunRequest) -> Response:
             session_id=request.session_id,
             run_id=request.run_id,
             message_id=request.message_id,
+            scope_type=request.scope_type,
+            workflow_id=request.workflow_id,
+            workflow_run_id=request.workflow_run_id,
+            workflow_session_id=request.workflow_session_id,
+            workflow_step_id=request.workflow_step_id,
         )
     except ValueError as e:
         logger.warning(f"Conflict starting run {request.run_id}: {e}")

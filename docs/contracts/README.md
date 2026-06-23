@@ -28,6 +28,7 @@ Machine-readable contract data for this repo lives in `docs/contracts/manifest.j
 - Internal service-to-service transport is HTTP by default and HTTPS/mTLS when the Kubernetes Helm chart sets `internalTransport.tls.enabled=true`. mTLS is transport hardening only; dispatch tokens, service tokens, and run-scoped JWTs remain required.
 - Execution-engine must never call target agents or the management console directly.
 - `target_type` is opaque to the execution loop except for validation against the contract enum. Kubernetes and `virtual_machine` runs use the same bootstrap, LLM stream, and MCP tool-call path; read-only/write policy is resolved by the control plane and encoded in the allowed tool snapshot and run JWT.
+- Workspace workflow runs extend the existing scope contract instead of faking a target. Snapshots may carry `scope.type = "workspace"`, `workflow_id`, `workflow_run_id`, `workflow_session_id`, current workflow step id, and server-compiled tool/context grants while keeping `target_id` and `target_type` optional unless a workflow step explicitly binds to a target.
 - Any contract change here must update this file and the mirrored control-plane or llm-gateway contract doc in the same change.
 
 ## Control-Plane Contract
@@ -84,7 +85,7 @@ Execution-engine must send `Authorization: Bearer <ORCH_SERVICE_TOKEN>` to:
 Bootstrap response fields execution-engine relies on:
 
 - `contract_version`
-- `scope.{workspace_id,target_id,target_type,session_id,run_id,user_id}`
+- `scope.{type,workspace_id,target_id?,target_type?,workflow_id?,workflow_run_id?,workflow_session_id?,workflow_step_id?,session_id,run_id,user_id}`. Target runs require `target_id` and `target_type`; workspace workflow runs require `workflow_id`, `workflow_run_id`, and `workflow_session_id` and may omit target binding.
 - `policy.{max_runtime_ms,max_output_tokens,budget_cents,max_steps,max_tool_calls,max_duplicate_tool_calls}`
 - `context.{endpoint,max_context_tokens}`
 - `llm.{provider,model,temperature,mode,reasoning.{summary_mode,effort},gateway.{url,token,request_timeout_ms}}`
@@ -95,7 +96,7 @@ Bootstrap response fields execution-engine relies on:
 Write approval resume contract:
 
 - `POST /internal/v1/runs/{runId}/approvals` stores the approval interrupt and serialized continuation. The request may include `summary`, a deterministic, human-readable sentence for approval UI copy.
-- `GET /internal/v1/runs/{runId}/continuation` returns the stored continuation plus current approval state.
+- `GET /internal/v1/runs/{runId}/continuation` returns the stored continuation plus current approval state. Target approvals include `targetId` and `targetType`; workspace workflow approvals include `workflowId`, `workflowRunId`, `workflowSessionId`, and optional `workflowStepId` without requiring target fields.
 - `GET /internal/v1/runs/{runId}/event-cursor` returns `{ latestSeq }` from the control-plane replay source; execution-engine must seed resumed event emission from this cursor, while preserving any higher local durable outbox cursor, before emitting approval or tool-result events.
 - `POST /execution-started` claims an approved write before tool execution.
 - `POST /execution-finished` persists the tool result immediately after execution.

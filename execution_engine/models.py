@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from execution_engine.examples import (
     EXAMPLE_MESSAGE_ID,
@@ -27,11 +27,38 @@ class RunRequest(BaseModel):
     contract_version: int = 1
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
-    target_id: str = Field(examples=[EXAMPLE_TARGET_ID])
-    target_type: TargetType = Field(examples=TARGET_TYPE_EXAMPLES)
+    scope_type: Literal["target", "workspace"] = "target"
+    target_id: Optional[str] = Field(default=None, examples=[EXAMPLE_TARGET_ID])
+    target_type: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
+    workflow_id: Optional[str] = None
+    workflow_run_id: Optional[str] = None
+    workflow_session_id: Optional[str] = None
+    workflow_step_id: Optional[str] = None
     session_id: str = Field(examples=[EXAMPLE_SESSION_ID])
     message_id: str = Field(examples=[EXAMPLE_MESSAGE_ID])
     requested_at: datetime
+
+    @model_validator(mode="after")
+    def validate_scope_fields(self):
+        if self.scope_type == "target":
+            if not self.target_id or not self.target_type:
+                raise ValueError("target scope requires target_id and target_type")
+            return self
+
+        missing = [
+            name
+            for name, value in (
+                ("workflow_id", self.workflow_id),
+                ("workflow_run_id", self.workflow_run_id),
+                ("workflow_session_id", self.workflow_session_id),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"workspace workflow scope missing required fields: {', '.join(missing)}")
+        if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
+            raise ValueError("workflow target binding requires both target_id and target_type")
+        return self
 
     model_config = {
         "json_schema_extra": {
@@ -52,12 +79,39 @@ class RunRequest(BaseModel):
 
 class Scope(BaseModel):
     """Run scope information."""
+    type: Literal["target", "workspace"] = "target"
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
-    target_id: str = Field(examples=[EXAMPLE_TARGET_ID])
-    target_type: TargetType = Field(examples=TARGET_TYPE_EXAMPLES)
+    target_id: Optional[str] = Field(default=None, examples=[EXAMPLE_TARGET_ID])
+    target_type: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
+    workflow_id: Optional[str] = None
+    workflow_run_id: Optional[str] = None
+    workflow_session_id: Optional[str] = None
+    workflow_step_id: Optional[str] = None
     session_id: str = Field(examples=[EXAMPLE_SESSION_ID])
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     user_id: Optional[str] = Field(default=None, examples=[EXAMPLE_USER_ID])
+
+    @model_validator(mode="after")
+    def validate_scope_fields(self):
+        if self.type == "target":
+            if not self.target_id or not self.target_type:
+                raise ValueError("target scope requires target_id and target_type")
+            return self
+
+        missing = [
+            name
+            for name, value in (
+                ("workflow_id", self.workflow_id),
+                ("workflow_run_id", self.workflow_run_id),
+                ("workflow_session_id", self.workflow_session_id),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"workspace workflow scope missing required fields: {', '.join(missing)}")
+        if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
+            raise ValueError("workflow target binding requires both target_id and target_type")
+        return self
 
 class Policy(BaseModel):
     """Execution policy for a run."""
@@ -242,8 +296,13 @@ class ToolCallRequest(BaseModel):
     """Request to the Tool Gateway to execute a tool."""
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
-    target_id: str = Field(examples=[EXAMPLE_TARGET_ID])
-    target_type: TargetType = Field(examples=TARGET_TYPE_EXAMPLES)
+    scope: Dict[str, Literal["target", "workspace"]] = Field(default_factory=lambda: {"type": "target"})
+    target_id: Optional[str] = Field(default=None, examples=[EXAMPLE_TARGET_ID])
+    target_type: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
+    workflow_id: Optional[str] = None
+    workflow_run_id: Optional[str] = None
+    workflow_session_id: Optional[str] = None
+    workflow_step_id: Optional[str] = None
     tool: str = Field(examples=["get_resource_logs"])
     arguments: Dict[str, Any]
 
@@ -281,8 +340,12 @@ class ToolApproval(BaseModel):
     id: str
     runId: str
     workspaceId: str
-    targetId: str
-    targetType: TargetType = Field(examples=TARGET_TYPE_EXAMPLES)
+    targetId: Optional[str] = None
+    targetType: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
+    workflowId: Optional[str] = None
+    workflowRunId: Optional[str] = None
+    workflowSessionId: Optional[str] = None
+    workflowStepId: Optional[str] = None
     toolCallId: str
     toolName: str
     summary: str | None = None

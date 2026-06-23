@@ -21,7 +21,7 @@
       ],
       "bootstrapFields": [
         "contract_version",
-        "scope.{workspace_id,target_id,target_type,session_id,run_id,user_id}",
+        "scope.{type,workspace_id,target_id?,target_type?,workflow_id?,workflow_run_id?,workflow_session_id?,workflow_step_id?,session_id,run_id,user_id}",
         "policy.{max_runtime_ms,max_output_tokens,budget_cents,max_steps,max_tool_calls,max_duplicate_tool_calls}",
         "context.{endpoint,max_context_tokens}",
         "llm.{provider,model,temperature,mode,reasoning.{summary_mode,effort},gateway.{url,token,request_timeout_ms}}",
@@ -32,6 +32,7 @@
       "contextFields": ["messages", "summaries", "attachments"],
       "eventFrameFields": ["schema_version", "run_id", "seq", "ts", "type", "payload"],
       "approvalRequestFields": ["toolCallId", "toolName", "summary?", "arguments", "continuation?"],
+      "approvalResponseScopeFields": ["targetId?", "targetType?", "workflowId?", "workflowRunId?", "workflowSessionId?", "workflowStepId?"],
       "eventTypes": [
         "run_progress",
         "run_started",

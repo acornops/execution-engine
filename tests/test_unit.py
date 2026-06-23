@@ -15,6 +15,7 @@ import execution_engine.agent.react_engine as react_engine_module
 import execution_engine.app as app_module
 import execution_engine.worker as worker_module
 from execution_engine.agent.react_engine import ReActAgentEngine
+from execution_engine.agent.tools import GatewayToolClient
 from execution_engine.app import app
 from execution_engine.approval_summary import build_approval_summary
 from execution_engine.config import Settings, settings
@@ -190,6 +191,56 @@ async def test_run_registry_rejects_same_run_id_with_different_session_or_messag
 
     with pytest.raises(ValueError, match="different identity"):
         await registry.get_or_create("w1", "c1", "kubernetes", "s1", "r1", "m2")
+
+
+@pytest.mark.asyncio
+async def test_run_registry_persists_workspace_workflow_identity_for_idempotency():
+    store = durability_store()
+    registry = RunRegistry(max_concurrent_runs=10, durability_store=store)
+    state, created = await registry.get_or_create(
+        EXAMPLE_WORKSPACE_ID,
+        None,
+        None,
+        "workflow-session-1",
+        "run-workflow-identity",
+        EXAMPLE_MESSAGE_ID,
+        scope_type="workspace",
+        workflow_id="workspace-tool-exposure-audit",
+        workflow_run_id="workflow-run-1",
+        workflow_session_id="workflow-session-1",
+        workflow_step_id="inventory-scope",
+    )
+
+    assert created is True
+    persisted = store.get_run(state.run_id)
+    assert persisted is not None
+    assert persisted.scope_type == "workspace"
+    assert persisted.target_id is None
+    assert persisted.target_type is None
+    assert persisted.workflow_id == "workspace-tool-exposure-audit"
+    assert persisted.workflow_run_id == "workflow-run-1"
+    assert persisted.workflow_session_id == "workflow-session-1"
+    assert persisted.workflow_step_id == "inventory-scope"
+
+    recovered_registry = RunRegistry(max_concurrent_runs=10, durability_store=store)
+    recovered, recovered_created = await recovered_registry.get_or_create(
+        EXAMPLE_WORKSPACE_ID,
+        None,
+        None,
+        "workflow-session-1",
+        "run-workflow-identity",
+        EXAMPLE_MESSAGE_ID,
+        scope_type="workspace",
+        workflow_id="workspace-tool-exposure-audit",
+        workflow_run_id="workflow-run-1",
+        workflow_session_id="workflow-session-1",
+        workflow_step_id="inventory-scope",
+    )
+
+    assert recovered_created is False
+    assert recovered.scope_type == "workspace"
+    assert recovered.workflow_id == "workspace-tool-exposure-audit"
+    assert recovered.workflow_run_id == "workflow-run-1"
 
 
 def test_production_config_rejects_default_tokens_and_redis():
@@ -422,6 +473,93 @@ async def test_orchestrator_client_omits_missing_approval_summary():
         assert approval.summary is None
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_client_accepts_targetless_workflow_approval():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/internal/v1/runs/r-workflow/approvals"
+        payload = json.loads(request.content.decode())
+        assert payload["toolName"] == "workflow.approval_gate"
+        return httpx.Response(
+            201,
+            json={
+                "id": "approval-workflow-1",
+                "runId": "r-workflow",
+                "workspaceId": EXAMPLE_WORKSPACE_ID,
+                "workflowId": "workspace-tool-exposure-audit",
+                "workflowRunId": "workflow-run-1",
+                "workflowSessionId": "workflow-session-1",
+                "workflowStepId": "inventory-scope",
+                "toolCallId": "workflow-gate-1",
+                "toolName": "workflow.approval_gate",
+                "summary": "Operator approval before governed workspace execution.",
+                "arguments": {"workflowId": "workspace-tool-exposure-audit"},
+                "status": "pending",
+                "executionStatus": "not_started",
+                "expiresAt": "2026-05-06T00:05:00.000Z",
+            },
+        )
+
+    client = OrchestratorClient()
+    await client.close()
+    client.base_url = "http://orchestrator"
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        approval = await client.create_tool_approval(
+            "r-workflow",
+            tool_call_id="workflow-gate-1",
+            tool_name="workflow.approval_gate",
+            arguments={"workflowId": "workspace-tool-exposure-audit"},
+            summary="Operator approval before governed workspace execution.",
+        )
+        assert approval.targetId is None
+        assert approval.targetType is None
+        assert approval.workflowId == "workspace-tool-exposure-audit"
+        assert approval.workflowRunId == "workflow-run-1"
+        assert approval.workflowSessionId == "workflow-session-1"
+    finally:
+        await client.close()
+
+
+def test_run_continuation_accepts_targetless_workflow_approval():
+    continuation = RunContinuation.model_validate(
+        {
+            "runId": "r-workflow",
+            "approvalId": "approval-workflow-1",
+            "state": {
+                "pending_tool_call": {
+                    "call_id": "workflow-gate-1",
+                    "tool": "workflow.approval_gate",
+                    "arguments": {"workflowId": "workspace-tool-exposure-audit"},
+                },
+                "llm_messages": [],
+                "tool_calls": [],
+                "tool_feedback_blocks": [],
+            },
+            "approval": {
+                "id": "approval-workflow-1",
+                "runId": "r-workflow",
+                "workspaceId": EXAMPLE_WORKSPACE_ID,
+                "workflowId": "workspace-tool-exposure-audit",
+                "workflowRunId": "workflow-run-1",
+                "workflowSessionId": "workflow-session-1",
+                "workflowStepId": "inventory-scope",
+                "toolCallId": "workflow-gate-1",
+                "toolName": "workflow.approval_gate",
+                "summary": "Operator approval before governed workspace execution.",
+                "arguments": {"workflowId": "workspace-tool-exposure-audit"},
+                "status": "approved",
+                "executionStatus": "not_started",
+                "expiresAt": "2026-05-06T00:05:00.000Z",
+            },
+        }
+    )
+
+    assert continuation.approval.targetId is None
+    assert continuation.approval.targetType is None
+    assert continuation.approval.workflowId == "workspace-tool-exposure-audit"
 
 
 @pytest.mark.asyncio
@@ -1335,6 +1473,98 @@ class FakeToolClient:
     ) -> dict[str, object]:
         self.calls.append((tool_name, arguments))
         return self.result
+
+
+@pytest.mark.asyncio
+async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
+    cancel_event = asyncio.Event()
+    llm_client = FakeStreamingLlmClient([
+        [
+            {"type": "delta", "text": "Workflow inventory complete."},
+            {"type": "final", "usage": {"input_tokens": 10, "output_tokens": 4, "tool_calls": 0}},
+        ]
+    ])
+    scope = Scope(
+        type="workspace",
+        workspace_id=EXAMPLE_WORKSPACE_ID,
+        session_id="workflow-session-1",
+        run_id="run-workflow-1",
+        workflow_id="workspace-tool-exposure-audit",
+        workflow_run_id="workflow-run-1",
+        workflow_session_id="workflow-session-1",
+        workflow_step_id="inventory-scope",
+    )
+    engine = ReActAgentEngine(
+        llm_client,
+        FakeToolClient(),
+        react_policy(),
+        scope,
+    )
+
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Audit workspace MCP exposure.")],
+            llm_config(),
+            [],
+            cancel_event,
+        )
+    ]
+
+    assert any(chunk["type"] == "delta" for chunk in chunks)
+    assert llm_client.calls[0]["scope_type"] == "workspace"
+    assert llm_client.calls[0]["target_id"] is None
+    assert llm_client.calls[0]["target_type"] is None
+    assert llm_client.calls[0]["workflow_id"] == "workspace-tool-exposure-audit"
+    assert llm_client.calls[0]["workflow_run_id"] == "workflow-run-1"
+    assert llm_client.calls[0]["workflow_session_id"] == "workflow-session-1"
+    assert llm_client.calls[0]["workflow_step_id"] == "inventory-scope"
+
+
+@pytest.mark.asyncio
+async def test_gateway_tool_client_sends_targetless_workspace_workflow_tool_call():
+    captured_payloads: list[dict[str, object]] = []
+
+    class CaptureClient:
+        async def post(self, url: str, json: dict[str, object]):
+            captured_payloads.append({"url": url, "json": json})
+            return httpx.Response(
+                200,
+                json={"result": {"tools": ["mcp.tools.list"]}, "is_error": False},
+                request=httpx.Request("POST", url),
+            )
+
+        async def aclose(self) -> None:
+            pass
+
+    tool_client = GatewayToolClient(
+        url="http://gateway.test",
+        token="run-jwt",
+        workspace_id=EXAMPLE_WORKSPACE_ID,
+        target_id=None,
+        target_type=None,
+        run_id="run-workflow-1",
+        allowed_tools=["mcp.tools.list"],
+        scope_type="workspace",
+        workflow_id="workspace-tool-exposure-audit",
+        workflow_run_id="workflow-run-1",
+        workflow_session_id="workflow-session-1",
+        workflow_step_id="inventory-scope",
+    )
+    await tool_client.close()
+    tool_client._client = CaptureClient()
+
+    result = await tool_client.call_tool("mcp.tools.list", {"server": "acornops"}, call_id="call-1")
+
+    assert result == {"result": {"tools": ["mcp.tools.list"]}, "is_error": False}
+    payload = captured_payloads[0]["json"]
+    assert payload["scope"] == {"type": "workspace"}
+    assert payload["target_id"] is None
+    assert payload["target_type"] is None
+    assert payload["workflow_id"] == "workspace-tool-exposure-audit"
+    assert payload["workflow_run_id"] == "workflow-run-1"
+    assert payload["workflow_session_id"] == "workflow-session-1"
+    assert payload["workflow_step_id"] == "inventory-scope"
 
 
 @pytest.mark.asyncio
