@@ -157,6 +157,23 @@ class ToolConfig(BaseModel):
     approval_timeout_seconds: int = 300
     gateway: GatewayConfig
 
+class SkillFile(BaseModel):
+    """A single markdown file within a target troubleshooting skill bundle."""
+    path: str
+    content: str
+
+class SkillEntry(BaseModel):
+    """One target troubleshooting skill bundle."""
+    id: str
+    name: str
+    description: str
+    files: List[SkillFile] = []
+
+class SkillConfig(BaseModel):
+    """Target troubleshooting skill bundles attached to a run snapshot."""
+    registry_version: str
+    entries: List[SkillEntry] = []
+
 class ExecutionSnapshot(BaseModel):
     """Authoritative snapshot of run configuration from the Orchestrator."""
     contract_version: int
@@ -165,6 +182,7 @@ class ExecutionSnapshot(BaseModel):
     context: ContextConfig
     llm: LLMConfig
     tools: ToolConfig
+    skills: Optional[SkillConfig] = None
     routing: Dict[str, Any]
     tracing: Dict[str, Any]
 

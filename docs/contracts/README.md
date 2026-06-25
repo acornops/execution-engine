@@ -90,6 +90,7 @@ Bootstrap response fields execution-engine relies on:
 - `context.{endpoint,max_context_tokens}`
 - `llm.{provider,model,temperature,mode,reasoning.{summary_mode,effort},gateway.{url,token,request_timeout_ms}}`
 - `tools.{tool_registry_version,allowed_tools,tool_specs,write_unavailable_reason?,gateway.{url,token},confirmation_required_for_write,approval_timeout_seconds}`. `write_unavailable_reason` is optional explanatory context for the assistant when configured write tools are absent from a read-only run or a read-only agent target; unknown values are ignored, and execution must still treat `allowed_tools` and the run JWT as authoritative.
+- `skills?.{registry_version,entries[].{id,name,description,files[].{path,content}}}`. These are optional target troubleshooting skill bundles. Execution-engine must inject them as prompt context before the normal conversation context for target runs only, in deterministic order, and must not treat them as tools or as authorization changes.
 - `routing`
 - `tracing`
 

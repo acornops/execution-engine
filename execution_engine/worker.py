@@ -7,8 +7,8 @@ from typing import Callable
 from execution_engine.agent.react_engine import ReActAgentEngine
 from execution_engine.agent.tools import GatewayToolClient, ToolClientStub
 from execution_engine.gateway_client import GatewayLlmClient
-from execution_engine.models import CommitRequest, Timing, ToolApproval, Usage
-from execution_engine.orchestrator_client import EventManager, OrchestratorClient
+from execution_engine.models import CommitRequest, ToolApproval, Usage
+from execution_engine.orchestrator_client import OrchestratorClient
 from execution_engine.reasoning_summary_events import ReasoningSummaryEventForwarder
 from execution_engine.run_registry import RunRegistry, RunState, RunStatus
 from execution_engine.util.logging import bind_log_context, logger, reset_log_context
@@ -22,6 +22,11 @@ from execution_engine.util.metrics import (
     runs_started_total,
 )
 from execution_engine.worker_fallbacks import build_tool_only_fallback
+from execution_engine.worker_run_support import (
+    build_skill_context_messages,
+    commit_queued_cancellation,
+    start_event_manager,
+)
 from execution_engine.worker_tool_sanitizer import sanitize_tool_spec_for_llm
 
 
@@ -32,25 +37,6 @@ class Worker:
         self.orchestrator_client = orchestrator_client
         self._semaphore = asyncio.Semaphore(registry.max_concurrent_runs)
 
-    async def _start_event_manager(self, run_id: str) -> EventManager:
-        try:
-            latest_seq = await self.orchestrator_client.get_run_event_cursor(run_id)
-        except Exception:
-            if not self.registry.durability_store:
-                raise
-            latest_seq = max(self.registry.durability_store.next_event_seq(run_id) - 1, 0)
-            logger.warning(f"Failed to fetch run event cursor for {run_id}; using durable local cursor")
-        if self.registry.durability_store:
-            latest_seq = max(latest_seq, self.registry.durability_store.next_event_seq(run_id) - 1)
-        event_manager = EventManager(
-            run_id,
-            self.orchestrator_client,
-            self.registry.durability_store,
-            initial_seq=latest_seq,
-        )
-        event_manager.start()
-        return event_manager
-
     async def run_loop(self) -> None:
         """Continuously dequeue and schedule accepted runs."""
         while True:
@@ -58,7 +44,9 @@ class Worker:
             state = self.registry.get_by_run_id(run_id)
             if state:
                 if state.cancel_event.is_set() or state.status == RunStatus.CANCELLED:
-                    asyncio.create_task(self.commit_queued_cancellation(state))
+                    asyncio.create_task(
+                        commit_queued_cancellation(self.registry, self.orchestrator_client, state)
+                    )
                 else:
                     state.task = asyncio.create_task(self.execute_run(state))
             self.registry.task_done()
@@ -69,38 +57,6 @@ class Worker:
         """Execute a run while respecting the worker concurrency limit."""
         async with self._semaphore:
             await self._do_execute_run(state)
-
-    async def commit_queued_cancellation(self, state: RunState) -> None:
-        """Commit cancellation for a run that was cancelled before execution."""
-        token = bind_log_context(
-            run_id=state.run_id,
-            workspace_id=state.workspace_id,
-            target_id=state.target_id,
-            target_type=state.target_type,
-            session_id=state.session_id,
-        )
-        try:
-            event_manager = await self._start_event_manager(state.run_id)
-            ended_at = datetime.now(UTC)
-            state.status = RunStatus.CANCELLED
-            state.started_at = state.started_at or state.created_at
-            state.ended_at = ended_at
-            event_manager.emit("run_cancelled", {"reason": "user_cancelled"})
-            self.registry.persist_state(state)
-            commit_req = CommitRequest(
-                status=RunStatus.CANCELLED.value,
-                assistant_message={"content": "", "format": "markdown"},
-                usage=Usage(input_tokens=0, output_tokens=0, tool_calls=0),
-                timing=Timing(started_at=state.started_at, ended_at=ended_at),
-            )
-            await event_manager.stop()
-            try:
-                await self.registry.deliver_terminal_commit(self.orchestrator_client, state.run_id, commit_req)
-            except Exception as exc:
-                logger.error(f"Failed to commit queued cancellation for run {state.run_id}: {exc}")
-            runs_cancelled_total.inc()
-        finally:
-            reset_log_context(token)
 
     async def _do_execute_run(self, state: RunState) -> None:
         token = bind_log_context(
@@ -125,7 +81,9 @@ class Worker:
         finish_cancelled: Callable[[], None] | None = None
 
         try:
-            event_manager = await self._start_event_manager(state.run_id)
+            event_manager = await start_event_manager(
+                self.registry, self.orchestrator_client, state.run_id
+            )
 
             cancel_event_emitted = False
 
@@ -445,6 +403,10 @@ class Worker:
                     self.registry.persist_state(state)
                     return
 
+            input_messages = context.messages if context else []
+            if snapshot.scope.type == "target":
+                input_messages = build_skill_context_messages(snapshot.skills) + input_messages
+
             engine = ReActAgentEngine(
                 llm_client,
                 tool_client,
@@ -475,7 +437,7 @@ class Worker:
             try:
                 async with asyncio.timeout(runtime_timeout_seconds):
                     async for chunk in engine.run(
-                        context.messages if context else [],
+                        input_messages,
                         snapshot.llm,
                         llm_tool_specs,
                         state.cancel_event,

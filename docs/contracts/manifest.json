@@ -26,6 +26,7 @@
         "context.{endpoint,max_context_tokens}",
         "llm.{provider,model,temperature,mode,reasoning.{summary_mode,effort},gateway.{url,token,request_timeout_ms}}",
         "tools.{tool_registry_version,allowed_tools,tool_specs,write_unavailable_reason?,gateway.{url,token},confirmation_required_for_write,approval_timeout_seconds}",
+        "skills?.{registry_version,entries[].{id,name,description,files[].{path,content}}}",
         "routing",
         "tracing"
       ],

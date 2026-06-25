@@ -70,6 +70,7 @@ for field in (
     "context: ContextConfig",
     "llm: LLMConfig",
     "tools: ToolConfig",
+    "skills: Optional[SkillConfig] = None",
     "routing: Dict[str, Any]",
     "tracing: Dict[str, Any]",
     "class CommitRequest",
