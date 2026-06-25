@@ -73,13 +73,14 @@ class GatewayLlmClient:
         payload = {
             "run_id": run_id,
             "workspace_id": workspace_id,
-            "scope": {"type": scope_type},
             "session_id": session_id,
             "provider": provider,
             "model": model,
             "messages": messages,
             "temperature": temperature,
         }
+        if scope_type != "target":
+            payload["scope"] = {"type": scope_type}
         if target_id is not None:
             payload["target_id"] = target_id
         if target_type is not None:

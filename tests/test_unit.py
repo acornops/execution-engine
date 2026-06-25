@@ -46,6 +46,7 @@ from execution_engine.models import (
 from execution_engine.orchestrator_client import EventManager, OrchestratorClient
 from execution_engine.readiness import DependencyStatus
 from execution_engine.run_registry import RunRegistry, RunStatus
+from execution_engine.worker_run_support import start_event_manager
 from execution_engine.worker_tool_sanitizer import sanitize_tool_spec_for_llm
 
 
@@ -631,9 +632,8 @@ async def test_worker_event_manager_preserves_higher_local_durable_cursor():
     client.post_events = AsyncMock()
 
     registry = RunRegistry(max_concurrent_runs=2, durability_store=store)
-    worker = worker_module.Worker(registry, client)
 
-    manager = await worker._start_event_manager("r-durable")
+    manager = await start_event_manager(registry, client, "r-durable")
     manager.emit("tool_call_completed", {"call_id": "call-1"})
     await asyncio.sleep(0.2)
     await manager.stop()

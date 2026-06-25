@@ -120,8 +120,16 @@ class GatewayToolClient(ToolClient):
             arguments=arguments
         )
 
+        payload_json = payload.model_dump()
+        if self.scope_type == "target":
+            payload_json.pop("scope", None)
+            payload_json.pop("workflow_id", None)
+            payload_json.pop("workflow_run_id", None)
+            payload_json.pop("workflow_session_id", None)
+            payload_json.pop("workflow_step_id", None)
+
         try:
-            response = await self._client.post(f"{self.url}/api/v1/mcp/tool-call", json=payload.model_dump())
+            response = await self._client.post(f"{self.url}/api/v1/mcp/tool-call", json=payload_json)
             response.raise_for_status()
             tool_resp = ToolCallResponse.model_validate(response.json())
         except httpx.TimeoutException:
