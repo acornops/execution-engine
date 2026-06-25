@@ -23,7 +23,19 @@ class RunStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
-RunKey = Tuple[str, str, Optional[str], Optional[str], str, str, str, Optional[str], Optional[str], Optional[str], Optional[str]]
+RunKey = Tuple[
+    str,
+    str,
+    Optional[str],
+    Optional[str],
+    str,
+    str,
+    str,
+    Optional[str],
+    Optional[str],
+    Optional[str],
+    Optional[str],
+]
 # (scope_type, workspace_id, target_id, target_type, session_id, message_id, run_id,
 #  workflow_id, workflow_run_id, workflow_session_id, workflow_step_id)
 

@@ -7,8 +7,8 @@ from typing import Callable
 from execution_engine.agent.react_engine import ReActAgentEngine
 from execution_engine.agent.tools import GatewayToolClient, ToolClientStub
 from execution_engine.gateway_client import GatewayLlmClient
-from execution_engine.models import CommitRequest, ToolApproval, Usage
-from execution_engine.orchestrator_client import OrchestratorClient
+from execution_engine.models import CommitRequest, Timing, ToolApproval, Usage
+from execution_engine.orchestrator_client import EventManager, OrchestratorClient
 from execution_engine.reasoning_summary_events import ReasoningSummaryEventForwarder
 from execution_engine.run_registry import RunRegistry, RunState, RunStatus
 from execution_engine.util.logging import bind_log_context, logger, reset_log_context
