@@ -70,6 +70,7 @@ for field in (
     "context: ContextConfig",
     "llm: LLMConfig",
     "tools: ToolConfig",
+    "native_tools: List[Dict[str, Any]] = []",
     "skills: Optional[SkillConfig] = None",
     "routing: Dict[str, Any]",
     "tracing: Dict[str, Any]",
@@ -124,6 +125,7 @@ for needle in (
 
 for needle in (
     'url = f"{self.url}/api/v1/llm/generations:stream"',
+    'payload["native_tools"] = native_tools',
     'self._client.post(f"{self.url}/api/v1/mcp/tool-call"',
     "if tool_name not in self.allowed_tools",
 ):

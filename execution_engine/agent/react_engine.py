@@ -171,6 +171,27 @@ class ReActAgentEngine(AgentEngine):
             )
         return None
 
+    @staticmethod
+    def _native_tool_instruction(native_tools: List[Dict[str, Any]] | None) -> str | None:
+        if not native_tools:
+            return None
+
+        capability_labels: List[str] = []
+        for tool in native_tools:
+            if tool.get("id") == "web_search":
+                capability_labels.append("Web Search")
+
+        if not capability_labels:
+            return None
+
+        capabilities = ", ".join(dict.fromkeys(capability_labels))
+        return (
+            f"Built-in capabilities enabled for this run: {capabilities}. "
+            "When the user asks what tools or capabilities are available, include these separately from "
+            "standard callable function tools. Built-in capabilities may not appear as standard tool-call "
+            "events in run details."
+        )
+
     def _build_continuation_state(
         self,
         *,
@@ -200,6 +221,7 @@ class ReActAgentEngine(AgentEngine):
         llm_config: LLMConfig,
         tool_specs: List[Dict[str, Any]],
         cancel_event: asyncio.Event,
+        native_tools: List[Dict[str, Any]] | None = None,
         continuation_state: Dict[str, Any] | None = None,
         resume_tool_result: Dict[str, Any] | None = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
@@ -234,6 +256,9 @@ class ReActAgentEngine(AgentEngine):
             write_unavailable_instruction = self._write_unavailable_instruction(self.write_unavailable_reason)
             if write_unavailable_instruction:
                 llm_messages.insert(0, {"role": "system", "content": write_unavailable_instruction})
+            native_tool_instruction = self._native_tool_instruction(native_tools)
+            if native_tool_instruction:
+                llm_messages.insert(0, {"role": "system", "content": native_tool_instruction})
             request_preview = self._summarize_user_request(llm_messages)
             if request_preview:
                 yield {
@@ -419,6 +444,7 @@ class ReActAgentEngine(AgentEngine):
                     workflow_step_id=self.scope.workflow_step_id,
                     reasoning=llm_config.reasoning.model_dump(),
                     tools=tool_specs,
+                    native_tools=native_tools or [],
                 ),
                 cancel_event,
             ):
@@ -517,6 +543,7 @@ class ReActAgentEngine(AgentEngine):
                     workflow_step_id=self.scope.workflow_step_id,
                     reasoning=llm_config.reasoning.model_dump(),
                     tools=[],
+                    native_tools=[],
                 ),
                 cancel_event,
             ):

@@ -228,6 +228,17 @@ async def test_gateway_llm_client_streams_successful_chunks(monkeypatch: pytest.
             max_output_tokens=5,
             reasoning={"summary_mode": "auto", "effort": "default"},
             tools=[{"name": "allowed_tool"}],
+            native_tools=[
+                {
+                    "id": "web_search",
+                    "config": {
+                        "domainFilters": {
+                            "allowedDomains": ["docs.example.com"],
+                            "blockedDomains": ["ads.example.com"],
+                        }
+                    },
+                }
+            ],
         )
     ]
 
@@ -248,6 +259,17 @@ async def test_gateway_llm_client_streams_successful_chunks(monkeypatch: pytest.
         "max_output_tokens": 5,
         "reasoning": {"summary_mode": "auto", "effort": "default"},
         "tools": [{"name": "allowed_tool"}],
+        "native_tools": [
+            {
+                "id": "web_search",
+                "config": {
+                    "domainFilters": {
+                        "allowedDomains": ["docs.example.com"],
+                        "blockedDomains": ["ads.example.com"],
+                    }
+                },
+            }
+        ],
     }
 
 

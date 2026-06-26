@@ -9,7 +9,7 @@
 ## Secrets
 
 - Do not log run-scoped gateway tokens.
-- Do not bypass allowed-provider, allowed-model, or allowed-tool policy from snapshots or JWTs.
+- Do not bypass allowed-provider, allowed-model, allowed-tool, or allowed-native-tool policy from snapshots or JWTs.
 - Keep control-plane callback auth explicit and narrow.
 - Production must set non-default `ORCH_SERVICE_TOKEN` and `EXECUTION_ENGINE_DISPATCH_TOKEN`.
 - `APP_ENV=production` rejects development token defaults, missing Redis, default control-plane URL, and missing `EXECUTION_GATEWAY_BASE_URL`.
@@ -22,7 +22,8 @@
 - Control-plane dispatch and cancel calls must send `Authorization: Bearer <EXECUTION_ENGINE_DISPATCH_TOKEN>`.
 - Execution-engine callbacks into control-plane must send `Authorization: Bearer <ORCH_SERVICE_TOKEN>`.
 - llm-gateway tokens are short-lived run-scoped credentials supplied by the control plane snapshot; the execution engine only forwards them to llm-gateway.
-- Tool calls are denied unless the requested tool is present in the snapshot `allowed_tools` set.
+- MCP/function tool calls are denied unless the requested tool is present in the snapshot `allowed_tools` set.
+- Built-in native tools are forwarded only from the snapshot `native_tools` list and remain subject to run-scoped JWT native-tool claims in llm-gateway.
 
 ## High-Risk Changes
 

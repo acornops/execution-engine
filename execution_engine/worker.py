@@ -441,6 +441,7 @@ class Worker:
                         snapshot.llm,
                         llm_tool_specs,
                         state.cancel_event,
+                        native_tools=snapshot.tools.native_tools,
                         continuation_state=continuation_state,
                         resume_tool_result=resume_tool_result,
                     ):

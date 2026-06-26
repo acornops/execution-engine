@@ -151,6 +151,7 @@ class ToolConfig(BaseModel):
     """Tool registry and gateway configuration."""
     tool_registry_version: str
     allowed_tools: List[str]
+    native_tools: List[Dict[str, Any]] = []
     tool_specs: List[Dict[str, Any]] = []
     write_unavailable_reason: Optional[str] = None
     confirmation_required_for_write: bool = True

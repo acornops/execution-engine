@@ -49,6 +49,7 @@ class GatewayLlmClient:
         workflow_step_id: str | None = None,
         reasoning: Dict[str, str] | None = None,
         tools: List[Dict[str, Any]] | None = None,
+        native_tools: List[Dict[str, Any]] | None = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Streams generations from the gateway.
@@ -99,6 +100,8 @@ class GatewayLlmClient:
             payload["reasoning"] = reasoning
         if tools:
             payload["tools"] = tools
+        if native_tools:
+            payload["native_tools"] = native_tools
 
         timeout = httpx.Timeout(
             connect=min(self.timeout, 10.0),

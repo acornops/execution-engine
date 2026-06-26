@@ -1508,6 +1508,17 @@ async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
             llm_config(),
             [],
             cancel_event,
+            native_tools=[
+                {
+                    "id": "web_search",
+                    "config": {
+                        "domainFilters": {
+                            "allowedDomains": ["docs.example.com"],
+                            "blockedDomains": [],
+                        }
+                    },
+                }
+            ],
         )
     ]
 
@@ -1519,6 +1530,26 @@ async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
     assert llm_client.calls[0]["workflow_run_id"] == "workflow-run-1"
     assert llm_client.calls[0]["workflow_session_id"] == "workflow-session-1"
     assert llm_client.calls[0]["workflow_step_id"] == "inventory-scope"
+    assert llm_client.calls[0]["messages"][0] == {
+        "role": "system",
+        "content": (
+            "Built-in capabilities enabled for this run: Web Search. "
+            "When the user asks what tools or capabilities are available, include these separately from "
+            "standard callable function tools. Built-in capabilities may not appear as standard tool-call "
+            "events in run details."
+        ),
+    }
+    assert llm_client.calls[0]["native_tools"] == [
+        {
+            "id": "web_search",
+            "config": {
+                "domainFilters": {
+                    "allowedDomains": ["docs.example.com"],
+                    "blockedDomains": [],
+                }
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio

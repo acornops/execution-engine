@@ -23,7 +23,7 @@ Machine-readable contract data for this repo lives in `docs/contracts/manifest.j
 ## Shared Invariants
 
 - The control plane owns `run_id`, `workspace_id`, `target_id`, `target_type`, `session_id`, and `message_id`. Execution-engine must echo them exactly.
-- Tool permission and provider/model permission are resolved upstream. Execution-engine must treat `snapshot.tools.allowed_tools`, `snapshot.tools.tool_specs`, and the run JWT as authoritative.
+- Tool permission and provider/model permission are resolved upstream. Execution-engine must treat `snapshot.tools.allowed_tools`, `snapshot.tools.tool_specs`, `snapshot.tools.native_tools`, and the run JWT as authoritative.
 - Control-plane dispatch into execution-engine must use `EXECUTION_ENGINE_DISPATCH_TOKEN`; execution-engine callbacks into control-plane must use `ORCH_SERVICE_TOKEN`.
 - Internal service-to-service transport is HTTP by default and HTTPS/mTLS when the Kubernetes Helm chart sets `internalTransport.tls.enabled=true`. mTLS is transport hardening only; dispatch tokens, service tokens, and run-scoped JWTs remain required.
 - Execution-engine must never call target agents or the management console directly.
@@ -89,7 +89,7 @@ Bootstrap response fields execution-engine relies on:
 - `policy.{max_runtime_ms,max_output_tokens,budget_cents,max_steps,max_tool_calls,max_duplicate_tool_calls}`
 - `context.{endpoint,max_context_tokens}`
 - `llm.{provider,model,temperature,mode,reasoning.{summary_mode,effort},gateway.{url,token,request_timeout_ms}}`
-- `tools.{tool_registry_version,allowed_tools,tool_specs,write_unavailable_reason?,gateway.{url,token},confirmation_required_for_write,approval_timeout_seconds}`. `write_unavailable_reason` is optional explanatory context for the assistant when configured write tools are absent from a read-only run or a read-only agent target; unknown values are ignored, and execution must still treat `allowed_tools` and the run JWT as authoritative.
+- `tools.{tool_registry_version,allowed_tools,native_tools,tool_specs,write_unavailable_reason?,gateway.{url,token},confirmation_required_for_write,approval_timeout_seconds}`. `native_tools` carries built-in runtime tool policy such as `web_search` domain filters and is forwarded only to llm-gateway streaming requests. When native tools are present, execution-engine also adds assistant-facing context so self-reported capabilities distinguish built-in capabilities from standard callable function tools. `write_unavailable_reason` is optional explanatory context for the assistant when configured write tools are absent from a read-only run or a read-only agent target; unknown values are ignored, and execution must still treat `allowed_tools`, `native_tools`, and the run JWT as authoritative.
 - `skills?.{registry_version,entries[].{id,name,description,files[].{path,content}}}`. These are optional target troubleshooting skill bundles. Execution-engine must inject them as prompt context before the normal conversation context for target runs only, in deterministic order, and must not treat them as tools or as authorization changes.
 - `routing`
 - `tracing`
@@ -175,6 +175,7 @@ with `Authorization: Bearer <run-scoped-jwt>` and body:
 - optional `max_output_tokens`
 - optional `reasoning.{summary_mode,effort}`
 - optional `tools[]`
+- optional `native_tools[]`
 
 The gateway response is `application/x-ndjson` with one JSON object per line. Execution-engine depends on these event shapes:
 
@@ -191,7 +192,7 @@ Execution-engine forwards provider summary events as `assistant_reasoning_summar
 Local source development can enable deterministic streaming with
 `LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES=true` in llm-gateway. That mode is a
 local smoke-test aid only: the gateway still validates the run-scoped JWT,
-scope, provider/model claims, max-output bounds, and allowed tools before it
+scope, provider/model claims, max-output bounds, allowed tools, and allowed native tools before it
 emits deterministic NDJSON events.
 
 ### Tool execution
@@ -219,5 +220,6 @@ The response must stay:
 The run-scoped JWT is minted by the control plane and validated by llm-gateway against the control-plane JWKS. Execution-engine must not bypass or reinterpret the token:
 
 - if a tool is absent from `allowed_tools`, do not try to call it,
+- if a built-in native tool is absent from the snapshot `native_tools` list or run JWT native-tool claims, do not request it,
 - if a provider or model is absent from permissions, do not request it,
 - if `max_output_tokens` is bounded by the token, do not exceed it.
