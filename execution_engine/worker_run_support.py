@@ -1,10 +1,26 @@
 from datetime import UTC, datetime
 
-from execution_engine.models import CommitRequest, Message, SkillConfig, Timing, Usage
+from execution_engine.models import (
+    CommitRequest,
+    LoadedSkillSnapshot,
+    Message,
+    SkillConfig,
+    Timing,
+    ToolApproval,
+    Usage,
+)
 from execution_engine.orchestrator_client import EventManager, OrchestratorClient
 from execution_engine.run_registry import RunRegistry, RunState, RunStatus
+from execution_engine.skill_constants import INTERNAL_LOAD_TARGET_SKILL_TOOL
 from execution_engine.util.logging import bind_log_context, logger, reset_log_context
 from execution_engine.util.metrics import runs_cancelled_total
+
+
+def _skill_ref_sort_key(skill_ref: str) -> tuple[int, str]:
+    try:
+        return (int(skill_ref.removeprefix("skill_")), skill_ref)
+    except ValueError:
+        return (10**9, skill_ref)
 
 
 async def start_event_manager(
@@ -29,25 +45,142 @@ async def start_event_manager(
     return event_manager
 
 
-def build_skill_context_messages(skills: SkillConfig | None) -> list[Message]:
+def approval_event_payload(approval: ToolApproval) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "approval_id": approval.id,
+        "tool_call_id": approval.toolCallId,
+        "tool": approval.toolName,
+    }
+    return payload | ({"summary": approval.summary} if approval.summary is not None else {})
+
+
+def build_skill_catalog_messages(skills: SkillConfig | None) -> list[Message]:
     if not skills or not skills.entries:
         return []
 
-    messages: list[Message] = []
-    for skill in sorted(skills.entries, key=lambda entry: (entry.name.casefold(), entry.id)):
-        files = sorted(
-            skill.files,
-            key=lambda file: (0 if file.path == "SKILL.md" else 1, file.path),
-        )
-        content_parts = [
-            "Target troubleshooting skill context.",
-            f"Name: {skill.name}",
-            f"Description: {skill.description}",
-        ]
-        for file in files:
-            content_parts.extend(["", f"[{file.path}]", file.content])
-        messages.append(Message(role="system", content="\n".join(content_parts)))
-    return messages
+    content_parts = [
+        "Target troubleshooting skills available for this run.",
+        "Load full skill context only when it is relevant to the user's troubleshooting request.",
+        "Use the skill_ref value with the internal skill loader.",
+        "",
+    ]
+    for skill in sorted(skills.entries, key=lambda entry: (entry.name.casefold(), entry.ref)):
+        content_parts.extend([
+            f"- {skill.ref}: {skill.name}",
+            f"  Description: {skill.description}",
+        ])
+    return [Message(role="system", content="\n".join(content_parts))]
+
+
+def build_skill_loader_tool_spec(skills: SkillConfig | None) -> dict[str, object] | None:
+    if not skills or not skills.entries:
+        return None
+
+    skill_refs = [skill.ref for skill in sorted(skills.entries, key=lambda entry: _skill_ref_sort_key(entry.ref))]
+    return {
+        "name": INTERNAL_LOAD_TARGET_SKILL_TOOL,
+        "description": (
+            "Load the full Markdown instructions for one relevant target troubleshooting skill "
+            "from this run's frozen skill catalog."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "skill_ref": {
+                    "type": "string",
+                    "enum": skill_refs,
+                }
+            },
+            "required": ["skill_ref"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def build_loaded_skill_context_message(skill: LoadedSkillSnapshot) -> Message:
+    files = sorted(
+        skill.files,
+        key=lambda file: (0 if file.path == "SKILL.md" else 1, file.path),
+    )
+    content_parts = [
+        "Loaded target troubleshooting skill context.",
+        f"Name: {skill.name}",
+        f"Description: {skill.description}",
+        "Source: frozen run snapshot",
+    ]
+    for file in files:
+        content_parts.extend(["", f"[{file.path}]", file.content])
+    return Message(role="system", content="\n".join(content_parts))
+
+
+def build_loaded_skill_result(skill: LoadedSkillSnapshot) -> dict[str, object]:
+    message = build_loaded_skill_context_message(skill)
+    return {
+        "skill_ref": skill.skill_ref,
+        "skill_id": skill.skill_id,
+        "name": skill.name,
+        "description": skill.description,
+        "file_count": skill.file_count,
+        "total_bytes": skill.total_bytes,
+        "content_hash": skill.content_hash,
+        "message": {"role": message.role, "content": message.content},
+    }
+
+
+def build_skill_names_by_ref(skills: SkillConfig | None) -> dict[str, str]:
+    return {skill.ref: skill.name for skill in (skills.entries if skills else [])}
+
+
+def build_skill_catalog_event_payload(skills: SkillConfig | None) -> dict[str, object] | None:
+    if not skills or not skills.entries:
+        return None
+    return {
+        "count": len(skills.entries),
+        "skills": [{"skill_ref": skill.ref, "name": skill.name} for skill in skills.entries],
+    }
+
+
+def emit_skill_context_event(
+    chunk: dict[str, object],
+    skill_names_by_ref: dict[str, str],
+    emit_event,
+) -> bool:
+    chunk_type = str(chunk.get("type") or "")
+    skill_ref = str(chunk.get("skill_ref") or "")
+    if chunk_type == "skill_context_load_started":
+        payload: dict[str, object] = {"skill_ref": skill_ref}
+        skill_name = chunk.get("name") or skill_names_by_ref.get(skill_ref)
+        if skill_name:
+            payload["name"] = skill_name
+        emit_event("skill_context_load_started", payload)
+        return True
+    if chunk_type == "skill_context_loaded":
+        emit_event("skill_context_loaded", {
+            key: value
+            for key, value in {
+                "skill_ref": skill_ref,
+                "skill_id": chunk.get("skill_id"),
+                "name": chunk.get("name") or skill_names_by_ref.get(skill_ref),
+                "file_count": chunk.get("file_count"),
+                "total_bytes": chunk.get("total_bytes"),
+                "content_hash": chunk.get("content_hash"),
+            }.items()
+            if value is not None
+        })
+        return True
+    if chunk_type == "skill_context_load_failed":
+        emit_event("skill_context_load_failed", {
+            key: value
+            for key, value in {
+                "skill_ref": skill_ref,
+                "name": chunk.get("name") or skill_names_by_ref.get(skill_ref),
+                "code": chunk.get("code"),
+                "message": chunk.get("message"),
+            }.items()
+            if value is not None
+        })
+        return True
+    return False
 
 
 async def commit_queued_cancellation(

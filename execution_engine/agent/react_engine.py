@@ -7,6 +7,12 @@ from contextlib import suppress
 from typing import Any, AsyncGenerator, AsyncIterator, Dict, List
 
 from execution_engine.agent.engine import AgentEngine
+from execution_engine.agent.skill_loading import (
+    SkillLoader,
+    SkillLoadState,
+    load_requested_skill_contexts,
+    requested_skill_calls,
+)
 from execution_engine.agent.tools import ToolClient
 from execution_engine.approval_summary import build_approval_summary
 from execution_engine.gateway_client import GatewayLlmClient
@@ -26,6 +32,9 @@ class ReActAgentEngine(AgentEngine):
         tool_capabilities: Dict[str, str] | None = None,
         confirmation_required_for_write: bool = False,
         write_unavailable_reason: str | None = None,
+        skill_loader: SkillLoader | None = None,
+        max_skill_loads: int = 3,
+        max_loaded_skill_bytes: int = 262144,
     ):
         """
         Initializes the ReAct engine.
@@ -43,6 +52,9 @@ class ReActAgentEngine(AgentEngine):
         self.tool_capabilities = tool_capabilities or {}
         self.confirmation_required_for_write = confirmation_required_for_write
         self.write_unavailable_reason = write_unavailable_reason
+        self.skill_loader = skill_loader
+        self.max_skill_loads = max(max_skill_loads, 0)
+        self.max_loaded_skill_bytes = max(max_loaded_skill_bytes, 0)
 
     @staticmethod
     async def _iterate_until_cancelled(
@@ -212,6 +224,8 @@ class ReActAgentEngine(AgentEngine):
             "tool_calls": tool_calls,
             "next_tool_index": next_tool_index,
             "tool_feedback_blocks": tool_feedback_blocks,
+            "loaded_skill_refs": sorted(getattr(self, "_loaded_skill_refs", set())),
+            "loaded_skill_bytes": int(getattr(self, "_loaded_skill_bytes", 0)),
             "pending_tool_call": pending_tool_call,
         }
 
@@ -244,6 +258,9 @@ class ReActAgentEngine(AgentEngine):
             next_tool_index = int(continuation_state.get("next_tool_index") or 0)
             tool_feedback_blocks = list(continuation_state.get("tool_feedback_blocks") or [])
             pending_tool_feedback = bool(tool_feedback_blocks)
+            loaded_skill_refs = set(str(ref) for ref in continuation_state.get("loaded_skill_refs") or [])
+            loaded_skill_bytes = int(continuation_state.get("loaded_skill_bytes") or 0)
+            pending_skill_context = False
         else:
             current_step = 0
             total_tool_calls = 0
@@ -252,6 +269,9 @@ class ReActAgentEngine(AgentEngine):
             next_tool_index = 0
             tool_feedback_blocks: List[str] = []
             pending_tool_feedback = False
+            loaded_skill_refs: set[str] = set()
+            loaded_skill_bytes = 0
+            pending_skill_context = False
             llm_messages = [{"role": m.role, "content": m.content} for m in messages]
             write_unavailable_instruction = self._write_unavailable_instruction(self.write_unavailable_reason)
             if write_unavailable_instruction:
@@ -268,6 +288,8 @@ class ReActAgentEngine(AgentEngine):
                         "Deciding whether live tool calls are needed."
                     ),
                 }
+        self._loaded_skill_refs = loaded_skill_refs
+        self._loaded_skill_bytes = loaded_skill_bytes
 
         if resume_tool_result:
             tool_name = str(resume_tool_result["tool"])
@@ -473,6 +495,29 @@ class ReActAgentEngine(AgentEngine):
                     tool_calls.append(chunk)
 
             if has_tool_calls:
+                skill_calls = requested_skill_calls(tool_calls)
+                if skill_calls:
+                    skill_state = SkillLoadState(loaded_skill_refs, loaded_skill_bytes)
+                    async for event in load_requested_skill_contexts(
+                        skill_calls,
+                        llm_messages,
+                        skill_state,
+                        skill_loader=self.skill_loader,
+                        max_skill_loads=self.max_skill_loads,
+                        max_loaded_skill_bytes=self.max_loaded_skill_bytes,
+                    ):
+                        yield event
+                    loaded_skill_refs = skill_state.loaded_refs
+                    loaded_skill_bytes = skill_state.loaded_bytes
+                    self._loaded_skill_refs = loaded_skill_refs
+                    self._loaded_skill_bytes = loaded_skill_bytes
+                    current_step += 1
+                    pending_skill_context = True
+                    pending_tool_feedback = False
+                    active_tool_calls = []
+                    next_tool_index = 0
+                    tool_feedback_blocks = []
+                    continue
                 for chunk in buffered_chunks:
                     if chunk["type"] == "tool_call" or chunk["type"] == "error":
                         yield chunk
@@ -507,7 +552,11 @@ class ReActAgentEngine(AgentEngine):
             active_tool_calls = tool_calls
             next_tool_index = 0
 
-        if current_step >= max_steps and not terminated_by_guardrail and pending_tool_feedback:
+        if (
+            current_step >= max_steps
+            and not terminated_by_guardrail
+            and (pending_tool_feedback or pending_skill_context)
+        ):
             terminated_by_guardrail = True
             guardrail_reason = "step_limit"
             yield {
@@ -521,7 +570,7 @@ class ReActAgentEngine(AgentEngine):
                 {
                     "role": "user",
                     "content": (
-                        f"Tool loop stopped due safety limit ({reason_text}). "
+                        f"Tool loop stopped due to safety limit ({reason_text}). "
                         "Now provide the best possible final answer for the user using the evidence already collected. "
                         "Do not call tools. Do not return an empty response."
                     ),

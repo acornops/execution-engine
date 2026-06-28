@@ -80,6 +80,7 @@ Run cancel response is always `202`.
 Execution-engine must send `Authorization: Bearer <ORCH_SERVICE_TOKEN>` to:
 
 - `POST /internal/v1/runs/{runId}/bootstrap`
+- `GET /internal/v1/runs/{runId}/skills/{skillRef}`
 - `POST /internal/v1/runs/{runId}/approvals`
 - `GET /internal/v1/runs/{runId}/continuation`
 - `POST /internal/v1/runs/{runId}/approvals/{approvalId}/execution-started`
@@ -98,7 +99,7 @@ Bootstrap response fields execution-engine relies on:
 - `context.{endpoint,max_context_tokens}`
 - `llm.{provider,model,temperature,mode,reasoning.{summary_mode,effort},gateway.{url,token,request_timeout_ms}}`
 - `tools.{tool_registry_version,allowed_tools,native_tools,tool_specs,write_unavailable_reason?,gateway.{url,token},confirmation_required_for_write,approval_timeout_seconds}`. `native_tools` carries built-in runtime tool policy such as `web_search` domain filters and is forwarded only to llm-gateway streaming requests. When native tools are present, execution-engine also adds assistant-facing context so self-reported capabilities distinguish built-in capabilities from standard callable function tools. `write_unavailable_reason` is optional explanatory context for the assistant when configured write tools are absent from a read-only run or a read-only agent target; unknown values are ignored, and execution must still treat `allowed_tools`, `native_tools`, and the run JWT as authoritative.
-- `skills?.{registry_version,entries[].{id,name,description,files[].{path,content}}}`. These are optional target troubleshooting skill bundles. Execution-engine must inject them as prompt context before the normal conversation context for target runs only, in deterministic order, and must not treat them as tools or as authorization changes.
+- `skills?.{contract_version,entries[].{ref,skill_id,name,description,file_count,total_bytes},load_endpoint}`. These are optional frozen target troubleshooting skill catalog entries. Execution-engine injects only compact skill metadata before the normal conversation context, exposes a hidden internal `_acornops_load_skill` model tool for relevant entries, loads full files from the control-plane snapshot endpoint on demand, and must not treat skills as authorization changes or normal tool usage.
 - `routing`
 - `tracing`
 
@@ -134,6 +135,10 @@ Current event types emitted by this repo:
 - `assistant_reasoning_summary_delta`
 - `assistant_reasoning_summary_completed`
 - `assistant_reasoning_summary_unavailable`
+- `skill_catalog_available`
+- `skill_context_load_started`
+- `skill_context_loaded`
+- `skill_context_load_failed`
 - `tool_call_started`
 - `tool_call_completed`
 - `tool_approval_requested` with `payload.summary?`
@@ -192,6 +197,13 @@ with `Authorization: Bearer <run-scoped-jwt>` and body:
 - optional `reasoning.{summary_mode,effort}`
 - optional `tools[]`
 - optional `native_tools[]`
+
+When frozen skills are available, execution-engine includes the internal
+model-only pseudo-tool `_acornops_load_skill` in `tools[]`. llm-gateway forwards
+that spec to the model but does not require it in `permissions.allowed_tools`;
+execution-engine intercepts returned `_acornops_load_skill` calls before normal MCP
+tool execution, loads frozen skill files from control plane, and records skill
+events instead of tool-call events.
 
 The gateway response is `application/x-ndjson` with one JSON object per line. Execution-engine depends on these event shapes:
 

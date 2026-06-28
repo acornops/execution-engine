@@ -157,8 +157,8 @@ class ToolConfig(BaseModel):
     """Tool registry and gateway configuration."""
     tool_registry_version: str
     allowed_tools: List[str]
-    native_tools: List[Dict[str, Any]] = []
-    tool_specs: List[Dict[str, Any]] = []
+    native_tools: List[Dict[str, Any]] = Field(default_factory=list)
+    tool_specs: List[Dict[str, Any]] = Field(default_factory=list)
     write_unavailable_reason: Optional[str] = None
     confirmation_required_for_write: bool = True
     approval_timeout_seconds: int = 300
@@ -171,15 +171,30 @@ class SkillFile(BaseModel):
 
 class SkillEntry(BaseModel):
     """One target troubleshooting skill bundle."""
-    id: str
+    ref: str
+    skill_id: str
     name: str
     description: str
-    files: List[SkillFile] = []
+    file_count: int = 0
+    total_bytes: int = 0
 
 class SkillConfig(BaseModel):
     """Target troubleshooting skill bundles attached to a run snapshot."""
-    registry_version: str
-    entries: List[SkillEntry] = []
+    contract_version: int = 2
+    entries: List[SkillEntry] = Field(default_factory=list)
+    load_endpoint: Optional[str] = None
+
+class LoadedSkillSnapshot(BaseModel):
+    """Frozen full skill snapshot loaded by skill ref for one run."""
+    skill_ref: str
+    skill_id: str
+    name: str
+    description: str
+    source: Dict[str, Any] = Field(default_factory=dict)
+    content_hash: str
+    file_count: int
+    total_bytes: int
+    files: List[SkillFile] = Field(default_factory=list)
 
 class ExecutionSnapshot(BaseModel):
     """Authoritative snapshot of run configuration from the Orchestrator."""

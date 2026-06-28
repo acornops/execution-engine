@@ -313,6 +313,61 @@ async def test_gateway_llm_client_returns_malformed_chunk_error(monkeypatch: pyt
 
 
 @pytest.mark.asyncio
+async def test_gateway_llm_client_reads_streaming_http_error_body(monkeypatch: pytest.MonkeyPatch):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            503,
+            request=request,
+            stream=StaticAsyncStream("provider temporarily unavailable"),
+        )
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        gateway_client_module.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: real_async_client(*args, transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    client = GatewayLlmClient(url="http://gateway", token="token")
+    chunks = [
+        chunk
+        async for chunk in client.stream_generation(
+            run_id="run-1",
+            workspace_id="ws",
+            target_id="cluster",
+            target_type="kubernetes",
+            session_id="session",
+            provider="openai",
+            model="gpt",
+            messages=[],
+            temperature=0.1,
+            max_output_tokens=None,
+        )
+    ]
+
+    assert chunks == [
+        {
+            "type": "error",
+            "code": "GATEWAY_HTTP_ERROR",
+            "message": "llm-gateway returned HTTP 503: provider temporarily unavailable",
+            "retryable": True,
+        }
+    ]
+
+
+def test_gateway_llm_client_masks_unread_streaming_http_error_detail():
+    request = httpx.Request("POST", "http://gateway/api/v1/llm/generations:stream")
+    response = httpx.Response(
+        503,
+        request=request,
+        stream=StaticAsyncStream("provider temporarily unavailable"),
+    )
+    error = httpx.HTTPStatusError("bad gateway", request=request, response=response)
+
+    assert gateway_client_module._http_error_detail(error) == "response body unavailable"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("side_effect", "expected"),
     [

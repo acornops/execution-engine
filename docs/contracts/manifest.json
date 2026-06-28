@@ -9,6 +9,7 @@
       "internalTransportSecurity": "HTTP by default; HTTPS/mTLS when Helm internalTransport.tls.enabled=true; bearer/JWT tokens remain required",
       "controlPlanePaths": [
         "POST /internal/v1/runs/{runId}/bootstrap",
+        "GET /internal/v1/runs/{runId}/skills/{skillRef}",
         "POST /internal/v1/runs/{runId}/approvals",
         "GET /internal/v1/runs/{runId}/continuation",
         "POST /internal/v1/runs/{runId}/approvals/{approvalId}/execution-started",
@@ -26,7 +27,7 @@
         "context.{endpoint,max_context_tokens}",
         "llm.{provider,model,temperature,mode,reasoning.{summary_mode,effort},gateway.{url,token,request_timeout_ms}}",
         "tools.{tool_registry_version,allowed_tools,native_tools,tool_specs,write_unavailable_reason?,gateway.{url,token},confirmation_required_for_write,approval_timeout_seconds}",
-        "skills?.{registry_version,entries[].{id,name,description,files[].{path,content}}}",
+        "skills?.{contract_version,entries[].{ref,skill_id,name,description,file_count,total_bytes},load_endpoint}",
         "routing",
         "tracing"
       ],
@@ -42,6 +43,10 @@
         "assistant_reasoning_summary_delta",
         "assistant_reasoning_summary_completed",
         "assistant_reasoning_summary_unavailable",
+        "skill_catalog_available",
+        "skill_context_load_started",
+        "skill_context_loaded",
+        "skill_context_load_failed",
         "tool_call_started",
         "tool_call_completed",
         "tool_approval_requested",
@@ -91,6 +96,7 @@
         "tools",
         "native_tools"
       ],
+      "internalModelOnlyTools": ["_acornops_load_skill"],
       "streamResponseTypes": [
         "delta",
         "tool_call",

@@ -10,6 +10,15 @@ from execution_engine.internal_transport import httpx_tls_kwargs
 from execution_engine.util.metrics import gateway_stream_malformed_chunks_total, gateway_streams_total
 
 
+def _http_error_detail(error: httpx.HTTPStatusError) -> str:
+    if error.response is None:
+        return str(error)
+    try:
+        return error.response.text.strip() or "response body unavailable"
+    except RuntimeError:
+        return "response body unavailable"
+
+
 class GatewayLlmClient:
     """
     Handles streaming generations from the Execution Gateway.
@@ -122,6 +131,8 @@ class GatewayLlmClient:
             async with httpx.AsyncClient(headers=self.headers, timeout=timeout, **httpx_tls_kwargs()) as client:
                 url = f"{self.url}/api/v1/llm/generations:stream"
                 async with client.stream("POST", url, json=payload) as response:
+                    if response.status_code >= 400:
+                        await response.aread()
                     response.raise_for_status()
                     async for line in response.aiter_lines():
                         if not line:
@@ -150,7 +161,7 @@ class GatewayLlmClient:
             }
         except httpx.HTTPStatusError as error:
             gateway_streams_total.labels(result="http_error").inc()
-            detail = error.response.text.strip() if error.response is not None else str(error)
+            detail = _http_error_detail(error)
             yield {
                 "type": "error",
                 "code": "GATEWAY_HTTP_ERROR",

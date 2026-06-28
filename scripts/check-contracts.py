@@ -20,6 +20,10 @@ REASONING_SUMMARY_SOURCE = read("execution_engine/reasoning_summary_events.py")
 ORCH_CLIENT_SOURCE = read("execution_engine/orchestrator_client.py")
 GATEWAY_CLIENT_SOURCE = read("execution_engine/gateway_client.py")
 TOOL_CLIENT_SOURCE = read("execution_engine/agent/tools.py")
+REACT_ENGINE_SOURCE = read("execution_engine/agent/react_engine.py")
+SKILL_LOADING_SOURCE = read("execution_engine/agent/skill_loading.py")
+SKILL_CONSTANTS_SOURCE = read("execution_engine/skill_constants.py")
+WORKER_RUN_SUPPORT_SOURCE = read("execution_engine/worker_run_support.py")
 CONTROL_PLANE_CONTRACT = MANIFEST["counterparts"]["control-plane"]
 GATEWAY_CONTRACT = MANIFEST["counterparts"]["llm-gateway"]
 
@@ -70,7 +74,7 @@ for field in (
     "context: ContextConfig",
     "llm: LLMConfig",
     "tools: ToolConfig",
-    "native_tools: List[Dict[str, Any]] = []",
+    "native_tools: List[Dict[str, Any]] = Field(default_factory=list)",
     "skills: Optional[SkillConfig] = None",
     "routing: Dict[str, Any]",
     "tracing: Dict[str, Any]",
@@ -132,7 +136,11 @@ for needle in (
     expect_in(GATEWAY_CLIENT_SOURCE + TOOL_CLIENT_SOURCE, needle, "LLM-gateway client")
 
 for event_type in CONTROL_PLANE_CONTRACT["eventTypes"]:
-    expect_in(WORKER_SOURCE + REASONING_SUMMARY_SOURCE, f'"{event_type}"', "Worker event emission")
+    expect_in(
+        WORKER_SOURCE + WORKER_RUN_SUPPORT_SOURCE + REASONING_SUMMARY_SOURCE,
+        f'"{event_type}"',
+        "Worker event emission",
+    )
     expect_in(DOC, f"`{event_type}`", "Documented event")
 
 for field in CONTROL_PLANE_CONTRACT["bootstrapFields"]:
@@ -140,6 +148,13 @@ for field in CONTROL_PLANE_CONTRACT["bootstrapFields"]:
 
 for field in GATEWAY_CONTRACT["streamResponseTypes"]:
     expect_in(DOC, f'`{{"type":"{field}"', "Documented gateway stream type")
+
+for tool_name in GATEWAY_CONTRACT["internalModelOnlyTools"]:
+    expect_in(DOC, tool_name, "Documented internal model-only tool")
+    expect_in(SKILL_CONSTANTS_SOURCE, f'"{tool_name}"', "Internal model-only tool constant")
+    expect_in(SKILL_LOADING_SOURCE, "INTERNAL_LOAD_TARGET_SKILL_TOOL", "ReAct skill loader interception")
+    expect_in(REACT_ENGINE_SOURCE, "load_requested_skill_contexts", "ReAct skill loader interception")
+    expect_in(WORKER_RUN_SUPPORT_SOURCE, "INTERNAL_LOAD_TARGET_SKILL_TOOL", "Skill loader spec builder")
 
 expect_in(
     DOC,

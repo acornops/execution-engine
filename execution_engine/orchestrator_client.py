@@ -3,6 +3,7 @@
 import asyncio
 from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import httpx
 from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_delay, wait_random_exponential
@@ -16,6 +17,7 @@ from execution_engine.models import (
     Event,
     EventBatch,
     ExecutionSnapshot,
+    LoadedSkillSnapshot,
     RunContinuation,
     ToolApproval,
     ToolApprovalRequest,
@@ -105,6 +107,21 @@ class OrchestratorClient:
             return ContextPackage.model_validate(response.json())
         except Exception:
             orchestrator_requests_total.labels(endpoint="context", result="failure").inc()
+            raise
+
+    @_retry("skill_snapshot")
+    async def get_skill_snapshot(self, run_id: str, skill_ref: str) -> LoadedSkillSnapshot:
+        """Fetches a frozen skill snapshot for a run."""
+        encoded_run_id = quote(run_id, safe="")
+        encoded_skill_ref = quote(skill_ref, safe="")
+        url = f"{self.base_url}{INTERNAL_CONTROL_PLANE_PREFIX}/runs/{encoded_run_id}/skills/{encoded_skill_ref}"
+        try:
+            response = await self.client.get(url)
+            response.raise_for_status()
+            orchestrator_requests_total.labels(endpoint="skill_snapshot", result="success").inc()
+            return LoadedSkillSnapshot.model_validate(response.json())
+        except Exception:
+            orchestrator_requests_total.labels(endpoint="skill_snapshot", result="failure").inc()
             raise
 
     @_retry("events")

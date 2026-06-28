@@ -6,8 +6,9 @@ from typing import Callable
 
 from execution_engine.agent.react_engine import ReActAgentEngine
 from execution_engine.agent.tools import GatewayToolClient, ToolClientStub
+from execution_engine.config import settings
 from execution_engine.gateway_client import GatewayLlmClient
-from execution_engine.models import CommitRequest, Timing, ToolApproval, Usage
+from execution_engine.models import CommitRequest, Timing, Usage
 from execution_engine.orchestrator_client import EventManager, OrchestratorClient
 from execution_engine.reasoning_summary_events import ReasoningSummaryEventForwarder
 from execution_engine.run_registry import RunRegistry, RunState, RunStatus
@@ -23,8 +24,14 @@ from execution_engine.util.metrics import (
 )
 from execution_engine.worker_fallbacks import build_tool_only_fallback
 from execution_engine.worker_run_support import (
-    build_skill_context_messages,
+    approval_event_payload,
+    build_loaded_skill_result,
+    build_skill_catalog_event_payload,
+    build_skill_catalog_messages,
+    build_skill_loader_tool_spec,
+    build_skill_names_by_ref,
     commit_queued_cancellation,
+    emit_skill_context_event,
     start_event_manager,
 )
 from execution_engine.worker_tool_sanitizer import sanitize_tool_spec_for_llm
@@ -91,14 +98,6 @@ class Worker:
                 if state.cancel_event.is_set() and event_type != "run_cancelled":
                     return
                 event_manager.emit(event_type, payload)
-
-            def approval_event_payload(approval: ToolApproval) -> dict[str, object]:
-                payload: dict[str, object] = {
-                    "approval_id": approval.id,
-                    "tool_call_id": approval.toolCallId,
-                    "tool": approval.toolName,
-                }
-                return payload | ({"summary": approval.summary} if approval.summary is not None else {})
 
             def finish_cancelled_run() -> None:
                 nonlocal cancel_event_emitted
@@ -256,6 +255,11 @@ class Worker:
                 for sanitized_spec in [sanitize_tool_spec_for_llm(spec)]
                 if sanitized_spec is not None
             ]
+            skill_loader_spec = build_skill_loader_tool_spec(snapshot.skills)
+            if skill_loader_spec is not None:
+                sanitized_skill_loader_spec = sanitize_tool_spec_for_llm(skill_loader_spec)
+                if sanitized_skill_loader_spec is not None:
+                    llm_tool_specs.append(sanitized_skill_loader_spec)
 
             resume_tool_result = None
             continuation_state = continuation.state if continuation else None
@@ -407,9 +411,15 @@ class Worker:
                     return
 
             input_messages = context.messages if context else []
+            skill_names_by_ref = build_skill_names_by_ref(snapshot.skills)
             if snapshot.scope.type == "target":
-                input_messages = build_skill_context_messages(snapshot.skills) + input_messages
-
+                input_messages = build_skill_catalog_messages(snapshot.skills) + input_messages
+                skill_catalog_payload = build_skill_catalog_event_payload(snapshot.skills)
+                if skill_catalog_payload and not continuation:
+                    emit_event("skill_catalog_available", skill_catalog_payload)
+            async def load_skill_context(skill_ref: str) -> dict[str, object]:
+                skill = await self.orchestrator_client.get_skill_snapshot(state.run_id, skill_ref)
+                return build_loaded_skill_result(skill)
             engine = ReActAgentEngine(
                 llm_client,
                 tool_client,
@@ -418,6 +428,9 @@ class Worker:
                 tool_capabilities=tool_capabilities,
                 confirmation_required_for_write=snapshot.tools.confirmation_required_for_write,
                 write_unavailable_reason=snapshot.tools.write_unavailable_reason,
+                skill_loader=load_skill_context if snapshot.skills and snapshot.skills.entries else None,
+                max_skill_loads=settings.AGENT_MAX_SKILL_LOADS_PER_RUN,
+                max_loaded_skill_bytes=settings.AGENT_MAX_LOADED_SKILL_BYTES_PER_RUN,
             )
             if state.cancel_event.is_set():
                 finish_cancelled_run()
@@ -428,7 +441,6 @@ class Worker:
                 snapshot.llm.model,
                 emit_event,
             )
-
             emit_event("run_progress", {
                 "stage": "inference",
                 "message": f"Running {snapshot.llm.provider}/{snapshot.llm.model}."
@@ -482,6 +494,9 @@ class Worker:
                                 "result": chunk["result"],
                                 "is_error": chunk["is_error"]
                             })
+                        elif str(chunk["type"]).startswith("skill_context_"):
+                            summary_events.flush(force=True)
+                            emit_skill_context_event(chunk, skill_names_by_ref, emit_event)
                         elif chunk["type"] == "approval_interrupt":
                             summary_events.flush(force=True)
                             approval = await self.orchestrator_client.create_tool_approval(

@@ -399,6 +399,39 @@ async def test_orchestrator_client_reads_run_event_cursor():
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_client_encodes_skill_snapshot_path_params():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "http://orchestrator/internal/v1/runs/run%2F1/skills/skill%2F..%2F1"
+        return httpx.Response(
+            200,
+            json={
+                "skill_ref": "skill/../1",
+                "skill_id": "target-skill-1",
+                "name": "CNPG triage",
+                "description": "Use when investigating CloudNativePG failover.",
+                "source": {"type": "manual"},
+                "content_hash": "sha256:abc",
+                "file_count": 1,
+                "total_bytes": 42,
+                "files": [{"path": "SKILL.md", "content": "Use this frozen skill.", "size_bytes": 42}],
+            },
+            request=request,
+        )
+
+    client = OrchestratorClient()
+    await client.close()
+    client.base_url = "http://orchestrator"
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        snapshot = await client.get_skill_snapshot("run/1", "skill/../1")
+        assert snapshot.skill_ref == "skill/../1"
+        assert snapshot.files[0].path == "SKILL.md"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_client_sends_approval_summary():
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/internal/v1/runs/r1/approvals"
@@ -1476,6 +1509,301 @@ class FakeToolClient:
     ) -> dict[str, object]:
         self.calls.append((tool_name, arguments))
         return self.result
+
+
+@pytest.mark.asyncio
+async def test_react_engine_loads_skill_before_same_turn_tool_calls():
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {
+                    "type": "tool_call",
+                    "call_id": "skill-call",
+                    "tool": "_acornops_load_skill",
+                    "arguments": {"skill_ref": "skill_1"},
+                },
+                {"type": "tool_call", "call_id": "tool-call", "tool": "list_pods", "arguments": {"namespace": "demo"}},
+            ],
+            [
+                {"type": "delta", "text": "Used the loaded skill before checking tools."},
+                {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 7, "tool_calls": 0}},
+            ],
+        ]
+    )
+    tool_client = FakeToolClient()
+    loaded_refs: list[str] = []
+
+    async def load_skill(skill_ref: str) -> dict[str, object]:
+        loaded_refs.append(skill_ref)
+        return {
+            "skill_ref": skill_ref,
+            "skill_id": "target-skill-1",
+            "name": "CNPG triage",
+            "file_count": 1,
+            "total_bytes": 42,
+            "content_hash": "sha256:abc",
+            "message": {"role": "system", "content": "Loaded target troubleshooting skill context.\nName: CNPG triage"},
+        }
+
+    engine = ReActAgentEngine(
+        llm_client,
+        tool_client,
+        react_policy(max_steps=3, max_tool_calls=2),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1601"),
+        skill_loader=load_skill,
+    )
+
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Investigate the database failover.")],
+            llm_config(),
+            [{"name": "_acornops_load_skill"}, {"name": "list_pods"}],
+            asyncio.Event(),
+        )
+    ]
+
+    skill_event_types = [chunk["type"] for chunk in chunks if str(chunk["type"]).startswith("skill_context_")]
+    assert skill_event_types == ["skill_context_load_started", "skill_context_loaded"]
+    assert not any(chunk["type"] == "tool_call" for chunk in chunks)
+    assert tool_client.calls == []
+    assert loaded_refs == ["skill_1"]
+    assert len(llm_client.calls) == 2
+    assert any(
+        message["role"] == "system" and "CNPG triage" in message["content"]
+        for message in llm_client.calls[1]["messages"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_react_engine_dedupes_repeated_skill_loads_without_duplicate_context():
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {
+                    "type": "tool_call",
+                    "call_id": "skill-call-1",
+                    "tool": "_acornops_load_skill",
+                    "arguments": {"skill_ref": "skill_1"},
+                },
+            ],
+            [
+                {
+                    "type": "tool_call",
+                    "call_id": "skill-call-2",
+                    "tool": "_acornops_load_skill",
+                    "arguments": {"skill_ref": "skill_1"},
+                },
+            ],
+            [
+                {"type": "delta", "text": "Continued with existing skill context."},
+                {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 7, "tool_calls": 0}},
+            ],
+        ]
+    )
+    load_count = 0
+
+    async def load_skill(skill_ref: str) -> dict[str, object]:
+        nonlocal load_count
+        load_count += 1
+        return {
+            "skill_ref": skill_ref,
+            "skill_id": "target-skill-1",
+            "name": "CNPG triage",
+            "file_count": 1,
+            "total_bytes": 42,
+            "content_hash": "sha256:abc",
+            "message": {"role": "system", "content": "Loaded target troubleshooting skill context.\nName: CNPG triage"},
+        }
+
+    engine = ReActAgentEngine(
+        llm_client,
+        FakeToolClient(),
+        react_policy(max_steps=4, max_tool_calls=2),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1602"),
+        skill_loader=load_skill,
+    )
+
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Investigate the database failover.")],
+            llm_config(),
+            [{"name": "_acornops_load_skill"}],
+            asyncio.Event(),
+        )
+    ]
+
+    loaded_events = [chunk for chunk in chunks if chunk["type"] == "skill_context_loaded"]
+    assert load_count == 1
+    assert len(loaded_events) == 1
+    assert sum(
+        1
+        for message in llm_client.calls[-1]["messages"]
+        if "Loaded target troubleshooting skill context" in message["content"]
+    ) == 1
+    assert any(
+        "already loaded" in message["content"]
+        for message in llm_client.calls[-1]["messages"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_react_engine_synthesizes_final_after_skill_load_step_limit():
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {
+                    "type": "tool_call",
+                    "call_id": "skill-call",
+                    "tool": "_acornops_load_skill",
+                    "arguments": {"skill_ref": "skill_1"},
+                },
+            ],
+            [
+                {"type": "delta", "text": "Final answer from loaded skill context."},
+                {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 7, "tool_calls": 0}},
+            ],
+        ]
+    )
+
+    async def load_skill(skill_ref: str) -> dict[str, object]:
+        return {
+            "skill_ref": skill_ref,
+            "skill_id": "target-skill-1",
+            "name": "CNPG triage",
+            "file_count": 1,
+            "total_bytes": 42,
+            "content_hash": "sha256:abc",
+            "message": {"role": "system", "content": "Loaded target troubleshooting skill context.\nName: CNPG triage"},
+        }
+
+    engine = ReActAgentEngine(
+        llm_client,
+        FakeToolClient(),
+        react_policy(max_steps=1, max_tool_calls=2),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1603"),
+        skill_loader=load_skill,
+    )
+
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Investigate the database failover.")],
+            llm_config(),
+            [{"name": "_acornops_load_skill"}],
+            asyncio.Event(),
+        )
+    ]
+
+    assert [chunk["type"] for chunk in chunks if chunk["type"].startswith("skill_context_")] == [
+        "skill_context_load_started",
+        "skill_context_loaded",
+    ]
+    assert any(chunk["type"] == "delta" and "Final answer" in chunk["text"] for chunk in chunks)
+    assert llm_client.calls[-1]["tools"] == []
+
+
+@pytest.mark.asyncio
+async def test_react_engine_handles_malformed_skill_loader_arguments_without_crashing():
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {
+                    "type": "tool_call",
+                    "call_id": "skill-call",
+                    "tool": "_acornops_load_skill",
+                    "arguments": "not-json-object",
+                },
+            ],
+            [
+                {"type": "delta", "text": "Continued after malformed skill load request."},
+                {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 7, "tool_calls": 0}},
+            ],
+        ]
+    )
+    engine = ReActAgentEngine(
+        llm_client,
+        FakeToolClient(),
+        react_policy(max_steps=3, max_tool_calls=2),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1604"),
+    )
+
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Use relevant skill context.")],
+            llm_config(),
+            [{"name": "_acornops_load_skill"}],
+            asyncio.Event(),
+        )
+    ]
+
+    failure = next(chunk for chunk in chunks if chunk["type"] == "skill_context_load_failed")
+    assert failure["code"] == "INVALID_SKILL_REF"
+    assert len(llm_client.calls) == 2
+    assert any(
+        "skill_ref was missing" in message["content"]
+        for message in llm_client.calls[1]["messages"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_react_engine_skill_byte_budget_failure_discards_same_turn_tools():
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {
+                    "type": "tool_call",
+                    "call_id": "skill-call",
+                    "tool": "_acornops_load_skill",
+                    "arguments": {"skill_ref": "skill_1"},
+                },
+                {"type": "tool_call", "call_id": "tool-call", "tool": "list_pods", "arguments": {"namespace": "demo"}},
+            ],
+            [
+                {"type": "delta", "text": "Continued after skill budget failure."},
+                {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 7, "tool_calls": 0}},
+            ],
+        ]
+    )
+    tool_client = FakeToolClient()
+
+    async def load_skill(skill_ref: str) -> dict[str, object]:
+        return {
+            "skill_ref": skill_ref,
+            "skill_id": "target-skill-1",
+            "name": "Large skill",
+            "file_count": 1,
+            "total_bytes": 1024,
+            "content_hash": "sha256:large",
+            "message": {"role": "system", "content": "Large skill context"},
+        }
+
+    engine = ReActAgentEngine(
+        llm_client,
+        tool_client,
+        react_policy(max_steps=3, max_tool_calls=2),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1605"),
+        skill_loader=load_skill,
+        max_loaded_skill_bytes=1,
+    )
+
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Investigate with large skill.")],
+            llm_config(),
+            [{"name": "_acornops_load_skill"}, {"name": "list_pods"}],
+            asyncio.Event(),
+        )
+    ]
+
+    failure = next(chunk for chunk in chunks if chunk["type"] == "skill_context_load_failed")
+    assert failure["code"] == "SKILL_LOAD_BYTES_EXCEEDED"
+    assert tool_client.calls == []
+    assert not any(chunk["type"] == "tool_call" for chunk in chunks)
+    assert len(llm_client.calls) == 2
 
 
 @pytest.mark.asyncio
