@@ -1824,6 +1824,9 @@ async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
         workflow_run_id="workflow-run-1",
         workflow_session_id="workflow-session-1",
         workflow_step_id="inventory-scope",
+        agent_id="agent-cluster-triage",
+        agent_version=4,
+        trigger_id="trigger-manual-1",
     )
     engine = ReActAgentEngine(
         llm_client,

@@ -198,6 +198,9 @@ async def start_run(request: RunRequest) -> Response:
             workflow_run_id=request.workflow_run_id,
             workflow_session_id=request.workflow_session_id,
             workflow_step_id=request.workflow_step_id,
+            agent_id=request.agent_id,
+            agent_version=request.agent_version,
+            trigger_id=request.trigger_id,
         )
         state, created = await registry.get_or_create(
             workspace_id=request.workspace_id,

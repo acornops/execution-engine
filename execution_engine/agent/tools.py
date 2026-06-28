@@ -136,6 +136,9 @@ class GatewayToolClient(ToolClient):
             payload_json.pop("workflow_run_id", None)
             payload_json.pop("workflow_session_id", None)
             payload_json.pop("workflow_step_id", None)
+            payload_json.pop("agent_id", None)
+            payload_json.pop("agent_version", None)
+            payload_json.pop("trigger_id", None)
 
         try:
             response = await self._client.post(f"{self.url}/api/v1/mcp/tool-call", json=payload_json)

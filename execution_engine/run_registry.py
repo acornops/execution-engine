@@ -73,6 +73,9 @@ class RunState:
         workflow_run_id: Optional[str] = None,
         workflow_session_id: Optional[str] = None,
         workflow_step_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        agent_version: Optional[int] = None,
+        trigger_id: Optional[str] = None,
     ):
         """Initialize a queued run state."""
         self.workspace_id = workspace_id
@@ -86,6 +89,9 @@ class RunState:
         self.workflow_run_id = workflow_run_id
         self.workflow_session_id = workflow_session_id
         self.workflow_step_id = workflow_step_id
+        self.agent_id = agent_id
+        self.agent_version = agent_version
+        self.trigger_id = trigger_id
 
         self.status = RunStatus.QUEUED
         self.created_at = datetime.now(UTC)
@@ -155,6 +161,9 @@ class RunRegistry:
         workflow_run_id: Optional[str] = None,
         workflow_session_id: Optional[str] = None,
         workflow_step_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        agent_version: Optional[int] = None,
+        trigger_id: Optional[str] = None,
     ) -> Tuple[RunState, bool]:
         """
         Gets an existing run or creates a new one if it doesn't exist.
@@ -228,6 +237,9 @@ class RunRegistry:
                 workflow_run_id=workflow_run_id,
                 workflow_session_id=workflow_session_id,
                 workflow_step_id=workflow_step_id,
+                agent_id=agent_id,
+                agent_version=agent_version,
+                trigger_id=trigger_id,
             )
             if self.durability_store:
                 reserved = self.durability_store.reserve_run(
@@ -293,6 +305,9 @@ class RunRegistry:
             workflow_run_id=getattr(persisted, "workflow_run_id", None),
             workflow_session_id=getattr(persisted, "workflow_session_id", None),
             workflow_step_id=getattr(persisted, "workflow_step_id", None),
+            agent_id=getattr(persisted, "agent_id", None),
+            agent_version=getattr(persisted, "agent_version", None),
+            trigger_id=getattr(persisted, "trigger_id", None),
         )
         state.status = RunStatus(persisted.status)
         state.created_at = persisted.created_at

@@ -91,14 +91,12 @@ class Worker:
             event_manager = await start_event_manager(
                 self.registry, self.orchestrator_client, state.run_id
             )
-
             cancel_event_emitted = False
 
             def emit_event(event_type: str, payload: dict[str, object]) -> None:
                 if state.cancel_event.is_set() and event_type != "run_cancelled":
                     return
                 event_manager.emit(event_type, payload)
-
             def finish_cancelled_run() -> None:
                 nonlocal cancel_event_emitted
                 if cancel_event_emitted:
@@ -108,7 +106,6 @@ class Worker:
                 state.status = RunStatus.CANCELLED
                 runs_cancelled_total.inc()
                 self.registry.persist_state(state)
-
             finish_cancelled = finish_cancelled_run
 
             if state.cancel_event.is_set():
