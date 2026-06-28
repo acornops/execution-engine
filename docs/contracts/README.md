@@ -28,7 +28,7 @@ Machine-readable contract data for this repo lives in `docs/contracts/manifest.j
 - Internal service-to-service transport is HTTP by default and HTTPS/mTLS when the Kubernetes Helm chart sets `internalTransport.tls.enabled=true`. mTLS is transport hardening only; dispatch tokens, service tokens, and run-scoped JWTs remain required.
 - Execution-engine must never call target agents or the management console directly.
 - `target_type` is opaque to the execution loop except for validation against the contract enum. Kubernetes and `virtual_machine` runs use the same bootstrap, LLM stream, and MCP tool-call path; read-only/write policy is resolved by the control plane and encoded in the allowed tool snapshot and run JWT.
-- Workspace workflow runs extend the existing scope contract instead of faking a target. Snapshots may carry `scope.type = "workspace"`, `workflow_id`, `workflow_run_id`, `workflow_session_id`, current workflow step id, and server-compiled tool/context grants while keeping `target_id` and `target_type` optional unless a workflow step explicitly binds to a target.
+- Workspace workflow runs extend the existing scope contract instead of faking a target. Snapshots may carry `scope.type = "workspace"`, `workflow_id`, `workflow_run_id`, `workflow_session_id`, current workflow step id, assigned `agent_id`, `agent_version`, `trigger_id`, and server-compiled tool/context grants while keeping `target_id` and `target_type` optional unless a workflow step explicitly binds to a target.
 - Any contract change here must update this file and the mirrored control-plane or llm-gateway contract doc in the same change.
 
 ## Control-Plane Contract
@@ -52,8 +52,16 @@ Run start request body:
 - `contract_version`
 - `run_id`
 - `workspace_id`
+- `scope_type`
 - `target_id`
 - `target_type`
+- `workflow_id`
+- `workflow_run_id`
+- `workflow_session_id`
+- `workflow_step_id`
+- `agent_id`
+- `agent_version`
+- `trigger_id`
 - `session_id`
 - `message_id`
 - `requested_at`
@@ -85,7 +93,7 @@ Execution-engine must send `Authorization: Bearer <ORCH_SERVICE_TOKEN>` to:
 Bootstrap response fields execution-engine relies on:
 
 - `contract_version`
-- `scope.{type,workspace_id,target_id?,target_type?,workflow_id?,workflow_run_id?,workflow_session_id?,workflow_step_id?,session_id,run_id,user_id}`. Target runs require `target_id` and `target_type`; workspace workflow runs require `workflow_id`, `workflow_run_id`, and `workflow_session_id` and may omit target binding.
+- `scope.{type,workspace_id,target_id?,target_type?,workflow_id?,workflow_run_id?,workflow_session_id?,workflow_step_id?,agent_id?,agent_version?,trigger_id?,session_id,run_id,user_id}`. Target runs require `target_id` and `target_type`; workspace workflow runs require `workflow_id`, `workflow_run_id`, and `workflow_session_id` and may omit target binding. Agent-scoped workflow runs include agent metadata from the control-plane compiled scope.
 - `policy.{max_runtime_ms,max_output_tokens,budget_cents,max_steps,max_tool_calls,max_duplicate_tool_calls}`
 - `context.{endpoint,max_context_tokens}`
 - `llm.{provider,model,temperature,mode,reasoning.{summary_mode,effort},gateway.{url,token,request_timeout_ms}}`
@@ -165,8 +173,16 @@ with `Authorization: Bearer <run-scoped-jwt>` and body:
 
 - `run_id`
 - `workspace_id`
+- `scope.type`
 - `target_id`
 - `target_type`
+- `workflow_id`
+- `workflow_run_id`
+- `workflow_session_id`
+- `workflow_step_id`
+- `agent_id`
+- `agent_version`
+- `trigger_id`
 - `session_id`
 - `provider`
 - `model`
@@ -205,8 +221,16 @@ with `Authorization: Bearer <run-scoped-jwt>` and body:
 
 - `run_id`
 - `workspace_id`
+- `scope.type`
 - `target_id`
 - `target_type`
+- `workflow_id`
+- `workflow_run_id`
+- `workflow_session_id`
+- `workflow_step_id`
+- `agent_id`
+- `agent_version`
+- `trigger_id`
 - `tool`
 - `arguments`
 
@@ -220,6 +244,7 @@ The response must stay:
 The run-scoped JWT is minted by the control plane and validated by llm-gateway against the control-plane JWKS. Execution-engine must not bypass or reinterpret the token:
 
 - if a tool is absent from `allowed_tools`, do not try to call it,
+- if `agent_id`, `agent_version`, or `trigger_id` are present in workspace run scope, forward them unchanged in LLM and tool-call requests,
 - if a built-in native tool is absent from the snapshot `native_tools` list or run JWT native-tool claims, do not request it,
 - if a provider or model is absent from permissions, do not request it,
 - if `max_output_tokens` is bounded by the token, do not exceed it.

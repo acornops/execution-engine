@@ -65,6 +65,9 @@ class GatewayToolClient(ToolClient):
         workflow_run_id: str | None = None,
         workflow_session_id: str | None = None,
         workflow_step_id: str | None = None,
+        agent_id: str | None = None,
+        agent_version: int | None = None,
+        trigger_id: str | None = None,
     ):
         """Initialize a run-scoped tool gateway client."""
         self.url = url
@@ -78,6 +81,9 @@ class GatewayToolClient(ToolClient):
         self.workflow_run_id = workflow_run_id
         self.workflow_session_id = workflow_session_id
         self.workflow_step_id = workflow_step_id
+        self.agent_id = agent_id
+        self.agent_version = agent_version
+        self.trigger_id = trigger_id
         self.allowed_tools = set(allowed_tools)
         self.headers = {"Authorization": f"Bearer {self.token}"}
         self._client = httpx.AsyncClient(
@@ -116,6 +122,9 @@ class GatewayToolClient(ToolClient):
             workflow_run_id=self.workflow_run_id,
             workflow_session_id=self.workflow_session_id,
             workflow_step_id=self.workflow_step_id,
+            agent_id=self.agent_id,
+            agent_version=self.agent_version,
+            trigger_id=self.trigger_id,
             tool=tool_name,
             arguments=arguments
         )

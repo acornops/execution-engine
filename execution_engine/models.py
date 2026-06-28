@@ -34,6 +34,9 @@ class RunRequest(BaseModel):
     workflow_run_id: Optional[str] = None
     workflow_session_id: Optional[str] = None
     workflow_step_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    agent_version: Optional[int] = None
+    trigger_id: Optional[str] = None
     session_id: str = Field(examples=[EXAMPLE_SESSION_ID])
     message_id: str = Field(examples=[EXAMPLE_MESSAGE_ID])
     requested_at: datetime
@@ -87,6 +90,9 @@ class Scope(BaseModel):
     workflow_run_id: Optional[str] = None
     workflow_session_id: Optional[str] = None
     workflow_step_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    agent_version: Optional[int] = None
+    trigger_id: Optional[str] = None
     session_id: str = Field(examples=[EXAMPLE_SESSION_ID])
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     user_id: Optional[str] = Field(default=None, examples=[EXAMPLE_USER_ID])
@@ -322,6 +328,9 @@ class ToolCallRequest(BaseModel):
     workflow_run_id: Optional[str] = None
     workflow_session_id: Optional[str] = None
     workflow_step_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    agent_version: Optional[int] = None
+    trigger_id: Optional[str] = None
     tool: str = Field(examples=["get_resource_logs"])
     arguments: Dict[str, Any]
 

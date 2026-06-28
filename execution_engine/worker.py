@@ -235,6 +235,9 @@ class Worker:
                     workflow_run_id=state.workflow_run_id,
                     workflow_session_id=state.workflow_session_id,
                     workflow_step_id=state.workflow_step_id,
+                    agent_id=snapshot.scope.agent_id,
+                    agent_version=snapshot.scope.agent_version,
+                    trigger_id=snapshot.scope.trigger_id,
                 )
                 tool_capabilities = {
                     str(spec.get("name")): "write" if spec.get("capability") == "write" else "read"

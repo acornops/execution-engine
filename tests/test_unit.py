@@ -210,6 +210,9 @@ async def test_run_registry_persists_workspace_workflow_identity_for_idempotency
         workflow_run_id="workflow-run-1",
         workflow_session_id="workflow-session-1",
         workflow_step_id="inventory-scope",
+        agent_id="agent-cluster-triage",
+        agent_version=4,
+        trigger_id="trigger-manual-1",
     )
 
     assert created is True
@@ -1530,6 +1533,9 @@ async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
     assert llm_client.calls[0]["workflow_run_id"] == "workflow-run-1"
     assert llm_client.calls[0]["workflow_session_id"] == "workflow-session-1"
     assert llm_client.calls[0]["workflow_step_id"] == "inventory-scope"
+    assert llm_client.calls[0]["agent_id"] == "agent-cluster-triage"
+    assert llm_client.calls[0]["agent_version"] == 4
+    assert llm_client.calls[0]["trigger_id"] == "trigger-manual-1"
     assert llm_client.calls[0]["messages"][0] == {
         "role": "system",
         "content": (
@@ -1581,6 +1587,9 @@ async def test_gateway_tool_client_sends_targetless_workspace_workflow_tool_call
         workflow_run_id="workflow-run-1",
         workflow_session_id="workflow-session-1",
         workflow_step_id="inventory-scope",
+        agent_id="agent-cluster-triage",
+        agent_version=4,
+        trigger_id="trigger-manual-1",
     )
     await tool_client.close()
     tool_client._client = CaptureClient()
@@ -1596,6 +1605,9 @@ async def test_gateway_tool_client_sends_targetless_workspace_workflow_tool_call
     assert payload["workflow_run_id"] == "workflow-run-1"
     assert payload["workflow_session_id"] == "workflow-session-1"
     assert payload["workflow_step_id"] == "inventory-scope"
+    assert payload["agent_id"] == "agent-cluster-triage"
+    assert payload["agent_version"] == 4
+    assert payload["trigger_id"] == "trigger-manual-1"
 
 
 @pytest.mark.asyncio

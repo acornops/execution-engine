@@ -47,6 +47,9 @@ class GatewayLlmClient:
         workflow_run_id: str | None = None,
         workflow_session_id: str | None = None,
         workflow_step_id: str | None = None,
+        agent_id: str | None = None,
+        agent_version: int | None = None,
+        trigger_id: str | None = None,
         reasoning: Dict[str, str] | None = None,
         tools: List[Dict[str, Any]] | None = None,
         native_tools: List[Dict[str, Any]] | None = None,
@@ -94,6 +97,12 @@ class GatewayLlmClient:
             payload["workflow_session_id"] = workflow_session_id
         if workflow_step_id is not None:
             payload["workflow_step_id"] = workflow_step_id
+        if agent_id is not None:
+            payload["agent_id"] = agent_id
+        if agent_version is not None:
+            payload["agent_version"] = agent_version
+        if trigger_id is not None:
+            payload["trigger_id"] = trigger_id
         if max_output_tokens is not None:
             payload["max_output_tokens"] = max_output_tokens
         if reasoning:
