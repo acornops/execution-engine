@@ -118,6 +118,7 @@ Context response shape:
 - `messages[]` of `{ role, content }`
 - `summaries[]`
 - `attachments[]`
+- `knowledge_bank.snippets[]` with retrieved entry metadata `{entry_id,title,evidence_summary,tags,confidence,observation_count,score,updated_at}`. These snippets describe Knowledge Bank context already injected by control plane and do not grant tool permissions.
 
 Event ingestion request shape:
 
@@ -139,6 +140,7 @@ Current event types emitted by this repo:
 - `skill_context_load_started`
 - `skill_context_loaded`
 - `skill_context_load_failed`
+- `knowledge_context_retrieved`
 - `tool_call_started`
 - `tool_call_completed`
 - `tool_approval_requested` with `payload.summary?`
