@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 from execution_engine.models import (
     CommitRequest,
+    ContextPackage,
     LoadedSkillSnapshot,
     Message,
     SkillConfig,
@@ -137,6 +138,28 @@ def build_skill_catalog_event_payload(skills: SkillConfig | None) -> dict[str, o
     return {
         "count": len(skills.entries),
         "skills": [{"skill_ref": skill.ref, "name": skill.name} for skill in skills.entries],
+    }
+
+
+def build_knowledge_context_event_payload(context: ContextPackage) -> dict[str, object] | None:
+    snippets = context.knowledge_bank.snippets
+    if not snippets:
+        return None
+    return {
+        "snippet_count": len(snippets),
+        "snippets": [
+            {
+                "entry_id": snippet.entry_id,
+                "title": snippet.title,
+                "evidence_summary": snippet.evidence_summary,
+                "tags": snippet.tags,
+                "confidence": snippet.confidence,
+                "observation_count": snippet.observation_count,
+                "score": snippet.score,
+                "updated_at": snippet.updated_at,
+            }
+            for snippet in snippets
+        ],
     }
 
 

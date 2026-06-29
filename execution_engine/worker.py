@@ -25,6 +25,7 @@ from execution_engine.util.metrics import (
 from execution_engine.worker_fallbacks import build_tool_only_fallback
 from execution_engine.worker_run_support import (
     approval_event_payload,
+    build_knowledge_context_event_payload,
     build_loaded_skill_result,
     build_skill_catalog_event_payload,
     build_skill_catalog_messages,
@@ -97,6 +98,8 @@ class Worker:
                 if state.cancel_event.is_set() and event_type != "run_cancelled":
                     return
                 event_manager.emit(event_type, payload)
+            def emit_progress(stage: str, message: str) -> None:
+                emit_event("run_progress", {"stage": stage, "message": message})
             def finish_cancelled_run() -> None:
                 nonlocal cancel_event_emitted
                 if cancel_event_emitted:
@@ -116,10 +119,7 @@ class Worker:
             state.started_at = datetime.now(UTC)
             self.registry.persist_state(state)
 
-            emit_event("run_progress", {
-                "stage": "bootstrap",
-                "message": "Resolving run snapshot from control plane."
-            })
+            emit_progress("bootstrap", "Resolving run snapshot from control plane.")
             try:
                 snapshot = await self.orchestrator_client.bootstrap(state.run_id)
             except Exception as e:
@@ -173,15 +173,9 @@ class Worker:
                 return
             if continuation:
                 context = None
-                emit_event("run_progress", {
-                    "stage": "approval_resume",
-                    "message": "Resuming run from a write approval decision."
-                })
+                emit_progress("approval_resume", "Resuming run from a write approval decision.")
             else:
-                emit_event("run_progress", {
-                    "stage": "context_fetch",
-                    "message": "Fetching conversation and target context."
-                })
+                emit_progress("context_fetch", "Fetching conversation and target context.")
                 try:
                     context = await self.orchestrator_client.get_context(snapshot.context.endpoint, state.run_id)
                 except Exception as e:
@@ -199,10 +193,9 @@ class Worker:
                 if state.cancel_event.is_set():
                     finish_cancelled_run()
                     return
-                emit_event("run_progress", {
-                    "stage": "context_ready",
-                    "message": f"Context ready with {len(context.messages)} messages."
-                })
+                if knowledge_event_payload := build_knowledge_context_event_payload(context):
+                    emit_event("knowledge_context_retrieved", knowledge_event_payload)
+                emit_progress("context_ready", f"Context ready with {len(context.messages)} messages.")
 
                 emit_event("run_started", {
                     "workspace_id": state.workspace_id,

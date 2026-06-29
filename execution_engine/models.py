@@ -215,11 +215,27 @@ class Message(BaseModel):
     role: str = Field(examples=["user"])
     content: str = Field(examples=["Investigate CrashLoopBackOff for payments-api in prod namespace."])
 
+class KnowledgeBankSnippet(BaseModel):
+    """Knowledge Bank snippet metadata retrieved for a run."""
+    entry_id: str
+    title: str
+    evidence_summary: str = ""
+    tags: List[str] = Field(default_factory=list)
+    confidence: float = 0
+    observation_count: int = 0
+    score: float = 0
+    updated_at: str = ""
+
+class KnowledgeBankContext(BaseModel):
+    """Knowledge Bank retrieval metadata included with conversation context."""
+    snippets: List[KnowledgeBankSnippet] = Field(default_factory=list)
+
 class ContextPackage(BaseModel):
     """A collection of messages and metadata representing the conversation context."""
     messages: List[Message]
     summaries: List[Any] = []
     attachments: List[Any] = []
+    knowledge_bank: KnowledgeBankContext = Field(default_factory=KnowledgeBankContext)
 
 # --- Events ---
 
