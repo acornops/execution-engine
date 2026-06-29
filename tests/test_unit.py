@@ -303,6 +303,7 @@ def test_knowledge_context_event_payload_contains_retrieved_snippet_metadata():
     )
 
     assert build_knowledge_context_event_payload(context) == {
+        "retrieval_status": "hit",
         "snippet_count": 1,
         "snippets": [
             {
@@ -316,6 +317,19 @@ def test_knowledge_context_event_payload_contains_retrieved_snippet_metadata():
                 "updated_at": "2026-06-29T01:00:00.000Z",
             }
         ],
+    }
+
+
+def test_knowledge_context_event_payload_reports_retrieval_misses():
+    context = ContextPackage(
+        messages=[Message(role="user", content="Do we have context for crashloopbackoff?")],
+        knowledge_bank=KnowledgeBankContext(retrieval_status="miss"),
+    )
+
+    assert build_knowledge_context_event_payload(context) == {
+        "retrieval_status": "miss",
+        "snippet_count": 0,
+        "snippets": [],
     }
 
 

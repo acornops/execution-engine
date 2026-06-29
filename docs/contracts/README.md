@@ -118,6 +118,7 @@ Context response shape:
 - `messages[]` of `{ role, content }`
 - `summaries[]`
 - `attachments[]`
+- `knowledge_bank.retrieval_status` with `hit`, `miss`, `skipped`, `disabled`, or `error` when Knowledge Bank was evaluated for a run.
 - `knowledge_bank.snippets[]` with retrieved entry metadata `{entry_id,title,evidence_summary,tags,confidence,observation_count,score,updated_at}`. These snippets describe Knowledge Bank context already injected by control plane and do not grant tool permissions.
 
 Event ingestion request shape:

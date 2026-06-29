@@ -31,7 +31,7 @@
         "routing",
         "tracing"
       ],
-      "contextFields": ["messages", "summaries", "attachments", "knowledge_bank.snippets[]"],
+      "contextFields": ["messages", "summaries", "attachments", "knowledge_bank.retrieval_status", "knowledge_bank.snippets[]"],
       "eventFrameFields": ["schema_version", "run_id", "seq", "ts", "type", "payload"],
       "approvalRequestFields": ["toolCallId", "toolName", "summary?", "arguments", "continuation?"],
       "approvalResponseScopeFields": ["targetId?", "targetType?", "workflowId?", "workflowRunId?", "workflowSessionId?", "workflowStepId?"],

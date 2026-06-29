@@ -228,6 +228,7 @@ class KnowledgeBankSnippet(BaseModel):
 
 class KnowledgeBankContext(BaseModel):
     """Knowledge Bank retrieval metadata included with conversation context."""
+    retrieval_status: str | None = None
     snippets: List[KnowledgeBankSnippet] = Field(default_factory=list)
 
 class ContextPackage(BaseModel):
