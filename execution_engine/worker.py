@@ -25,7 +25,7 @@ from execution_engine.util.metrics import (
 from execution_engine.worker_fallbacks import build_tool_only_fallback
 from execution_engine.worker_run_support import (
     approval_event_payload,
-    build_knowledge_context_event_payload,
+    build_target_insights_context_event_payload,
     build_loaded_skill_result,
     build_skill_catalog_event_payload,
     build_skill_catalog_messages,
@@ -193,8 +193,8 @@ class Worker:
                 if state.cancel_event.is_set():
                     finish_cancelled_run()
                     return
-                if knowledge_event_payload := build_knowledge_context_event_payload(context):
-                    emit_event("knowledge_context_retrieved", knowledge_event_payload)
+                if target_insights_event_payload := build_target_insights_context_event_payload(context):
+                    emit_event("target_insights_context_retrieved", target_insights_event_payload)
                 emit_progress("context_ready", f"Context ready with {len(context.messages)} messages.")
 
                 emit_event("run_started", {

@@ -33,8 +33,8 @@ from execution_engine.models import (
     Event,
     ExecutionSnapshot,
     GatewayConfig,
-    KnowledgeBankContext,
-    KnowledgeBankSnippet,
+    TargetInsightsContext,
+    TargetInsightsSnippet,
     LLMConfig,
     Message,
     Policy,
@@ -48,7 +48,7 @@ from execution_engine.models import (
 from execution_engine.orchestrator_client import EventManager, OrchestratorClient
 from execution_engine.readiness import DependencyStatus
 from execution_engine.run_registry import RunRegistry, RunStatus
-from execution_engine.worker_run_support import build_knowledge_context_event_payload, start_event_manager
+from execution_engine.worker_run_support import build_target_insights_context_event_payload, start_event_manager
 from execution_engine.worker_tool_sanitizer import sanitize_tool_spec_for_llm
 
 
@@ -280,15 +280,15 @@ def test_production_config_rejects_default_tokens_and_redis():
     assert settings_obj.durability_redis_url == "redis://redis:6379/1"
 
 
-def test_knowledge_context_event_payload_contains_retrieved_snippet_metadata():
+def test_target_insights_context_event_payload_contains_retrieved_snippet_metadata():
     empty_context = ContextPackage(messages=[Message(role="user", content="Diagnose registry 401.")])
-    assert build_knowledge_context_event_payload(empty_context) is None
+    assert build_target_insights_context_event_payload(empty_context) is None
 
     context = ContextPackage(
         messages=[Message(role="user", content="Diagnose registry 401.")],
-        knowledge_bank=KnowledgeBankContext(
+        target_insights=TargetInsightsContext(
             snippets=[
-                KnowledgeBankSnippet(
+                TargetInsightsSnippet(
                     entry_id="entry-1",
                     title="Registry auth failures across namespaces",
                     evidence_summary="Multiple namespaces recovered after refreshing imagePullSecret.",
@@ -302,7 +302,7 @@ def test_knowledge_context_event_payload_contains_retrieved_snippet_metadata():
         ),
     )
 
-    assert build_knowledge_context_event_payload(context) == {
+    assert build_target_insights_context_event_payload(context) == {
         "retrieval_status": "hit",
         "snippet_count": 1,
         "snippets": [
@@ -320,13 +320,13 @@ def test_knowledge_context_event_payload_contains_retrieved_snippet_metadata():
     }
 
 
-def test_knowledge_context_event_payload_reports_retrieval_misses():
+def test_target_insights_context_event_payload_reports_retrieval_misses():
     context = ContextPackage(
         messages=[Message(role="user", content="Do we have context for crashloopbackoff?")],
-        knowledge_bank=KnowledgeBankContext(retrieval_status="miss"),
+        target_insights=TargetInsightsContext(retrieval_status="miss"),
     )
 
-    assert build_knowledge_context_event_payload(context) == {
+    assert build_target_insights_context_event_payload(context) == {
         "retrieval_status": "miss",
         "snippet_count": 0,
         "snippets": [],

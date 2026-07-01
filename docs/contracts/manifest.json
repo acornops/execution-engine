@@ -31,7 +31,7 @@
         "routing",
         "tracing"
       ],
-      "contextFields": ["messages", "summaries", "attachments", "knowledge_bank.retrieval_status", "knowledge_bank.snippets[]"],
+      "contextFields": ["messages", "summaries", "attachments", "target_insights.retrieval_status", "target_insights.snippets[]"],
       "eventFrameFields": ["schema_version", "run_id", "seq", "ts", "type", "payload"],
       "approvalRequestFields": ["toolCallId", "toolName", "summary?", "arguments", "continuation?"],
       "approvalResponseScopeFields": ["targetId?", "targetType?", "workflowId?", "workflowRunId?", "workflowSessionId?", "workflowStepId?"],
@@ -47,7 +47,7 @@
         "skill_context_load_started",
         "skill_context_loaded",
         "skill_context_load_failed",
-        "knowledge_context_retrieved",
+        "target_insights_context_retrieved",
         "tool_call_started",
         "tool_call_completed",
         "tool_approval_requested",

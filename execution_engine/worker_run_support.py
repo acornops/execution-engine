@@ -141,9 +141,9 @@ def build_skill_catalog_event_payload(skills: SkillConfig | None) -> dict[str, o
     }
 
 
-def build_knowledge_context_event_payload(context: ContextPackage) -> dict[str, object] | None:
-    snippets = context.knowledge_bank.snippets
-    retrieval_status = context.knowledge_bank.retrieval_status
+def build_target_insights_context_event_payload(context: ContextPackage) -> dict[str, object] | None:
+    snippets = context.target_insights.snippets
+    retrieval_status = context.target_insights.retrieval_status
     if not snippets and not retrieval_status:
         return None
     return {
