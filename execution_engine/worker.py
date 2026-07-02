@@ -25,12 +25,12 @@ from execution_engine.util.metrics import (
 from execution_engine.worker_fallbacks import build_tool_only_fallback
 from execution_engine.worker_run_support import (
     approval_event_payload,
-    build_target_insights_context_event_payload,
     build_loaded_skill_result,
     build_skill_catalog_event_payload,
     build_skill_catalog_messages,
     build_skill_loader_tool_spec,
     build_skill_names_by_ref,
+    build_target_insights_context_event_payload,
     commit_queued_cancellation,
     emit_skill_context_event,
     start_event_manager,
