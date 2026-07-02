@@ -19,7 +19,7 @@
 - Run `task test` when end-to-end lifecycle behavior changes.
 - Preserve deterministic event ordering and terminal commit semantics.
 - Verify write approval interrupt/resume behavior for approved, rejected, expired, and disabled-confirmation paths.
-- Verify stale approved write execution fails with `WRITE_TOOL_OUTCOME_UNKNOWN` and does not call the k8s agent again.
+- Verify stale approved write execution fails with `WRITE_TOOL_OUTCOME_UNKNOWN` and does not call the AgentK again.
 - Verify outbox retry behavior when event posting fails and after process restart.
 - Verify `/ready` fails when required dependencies fail and `/health` remains shallow liveness only.
 - Verify terminal commit retry behavior after transient control-plane failures and process restart.

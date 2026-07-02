@@ -1,6 +1,6 @@
 # Execution-Engine Contracts
 
-This repo has two direct runtime dependencies: the control plane and llm-gateway. It does not talk directly to the management console, k8s agent, or VM agent.
+This repo has two direct runtime dependencies: the control plane and llm-gateway. It does not talk directly to the management console, AgentK, or AgentV.
 Machine-readable contract data for this repo lives in `docs/contracts/manifest.json` and is checked alongside this document.
 
 ## Full Platform Matrix
@@ -8,8 +8,8 @@ Machine-readable contract data for this repo lives in `docs/contracts/manifest.j
 - Management console -> control plane
 - Control plane <-> execution-engine
 - Control plane <-> llm-gateway
-- Control plane <-> k8s-agent
-- Control plane <-> vm-agent
+- Control plane <-> agentk
+- Control plane <-> agentv
 - Execution-engine -> llm-gateway
 
 ## Platform Dependency Summary

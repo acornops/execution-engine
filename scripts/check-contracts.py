@@ -169,7 +169,7 @@ for dependency in (
     "- Management console -> control plane",
     "- Control plane <-> execution-engine",
     "- Control plane <-> llm-gateway",
-    "- Control plane <-> k8s-agent",
+    "- Control plane <-> agentk",
     "- Execution-engine -> llm-gateway",
 ):
     expect_in(DOC, dependency, "Platform dependency matrix")
