@@ -13,6 +13,7 @@ def read(relative_path: str) -> str:
 README = read("README.md")
 DOC = read("docs/contracts/README.md")
 MANIFEST = json.loads(read("docs/contracts/manifest.json"))
+MANIFEST_TEXT = json.dumps(MANIFEST, sort_keys=True)
 APP_SOURCE = read("execution_engine/app.py")
 MODELS_SOURCE = read("execution_engine/models.py")
 WORKER_SOURCE = read("execution_engine/worker.py")
@@ -48,10 +49,13 @@ expect(MANIFEST["repo"] == "execution-engine", "Manifest repo")
 
 for heading in (
     "# Execution-Engine Contracts",
+    "## Source Of Truth",
     "## Full Platform Matrix",
     "## Platform Dependency Summary",
-    "## Control-Plane Contract",
-    "## LLM-Gateway Contract",
+    "## Shared Invariants",
+    "## Control-Plane Boundary Notes",
+    "## LLM-Gateway Boundary Notes",
+    "## Change Checklist",
 ):
     expect_in(DOC, heading, "Contract doc heading")
 
@@ -97,13 +101,17 @@ for field in (
 
 for documented in (
     *CONTROL_PLANE_CONTRACT["dispatchPaths"],
-    CONTROL_PLANE_CONTRACT["dispatchAuth"],
     *CONTROL_PLANE_CONTRACT["controlPlanePaths"],
     GATEWAY_CONTRACT["streamPath"],
     GATEWAY_CONTRACT["toolCallPath"],
+):
+    expect_in(MANIFEST_TEXT, documented, "Manifest endpoint")
+
+for documented in (
+    CONTROL_PLANE_CONTRACT["dispatchAuth"],
     "Authorization: Bearer <ORCH_SERVICE_TOKEN>",
 ):
-    expect_in(DOC, documented, "Documented endpoint")
+    expect_in(DOC, documented, "Documented auth boundary")
 
 for route in (
     '@app.post(\n    "/api/v1/runs",',
@@ -141,16 +149,16 @@ for event_type in CONTROL_PLANE_CONTRACT["eventTypes"]:
         f'"{event_type}"',
         "Worker event emission",
     )
-    expect_in(DOC, f"`{event_type}`", "Documented event")
+    expect_in(MANIFEST_TEXT, event_type, "Manifest event")
 
 for field in CONTROL_PLANE_CONTRACT["bootstrapFields"]:
-    expect_in(DOC, f"`{field}`", "Documented bootstrap field")
+    expect_in(MANIFEST_TEXT, field, "Manifest bootstrap field")
 
 for field in GATEWAY_CONTRACT["streamResponseTypes"]:
-    expect_in(DOC, f'`{{"type":"{field}"', "Documented gateway stream type")
+    expect_in(MANIFEST_TEXT, field, "Manifest gateway stream type")
 
 for tool_name in GATEWAY_CONTRACT["internalModelOnlyTools"]:
-    expect_in(DOC, tool_name, "Documented internal model-only tool")
+    expect_in(MANIFEST_TEXT, tool_name, "Manifest internal model-only tool")
     expect_in(SKILL_CONSTANTS_SOURCE, f'"{tool_name}"', "Internal model-only tool constant")
     expect_in(SKILL_LOADING_SOURCE, "INTERNAL_LOAD_TARGET_SKILL_TOOL", "ReAct skill loader interception")
     expect_in(REACT_ENGINE_SOURCE, "load_requested_skill_contexts", "ReAct skill loader interception")
@@ -163,7 +171,7 @@ expect_in(
 )
 
 for field in GATEWAY_CONTRACT["toolCallResponseFields"]:
-    expect_in(DOC, f"`{field}`", "Documented tool call response field")
+    expect_in(MANIFEST_TEXT, field, "Manifest tool call response field")
 
 for dependency in (
     "- Management console -> control plane",
