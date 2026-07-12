@@ -40,6 +40,8 @@ The execution engine owns run execution and talks only to the control plane and 
 - Run dispatch accepts idempotent replays, rejects scope mismatches, and reports local overload without widening run ownership.
 - Workspace workflow runs use explicit workspace scope fields; they must not fake a target.
 - `WRITE_TOOL_OUTCOME_UNKNOWN` is fail-closed: do not retry a write after the approval execution state is already executing or unknown.
+- `patch_resource` approvals summarize semantic field intent and explicitly
+  surface workload rollout, future CronJob, and Service-routing impact.
 
 ## LLM-Gateway Boundary Notes
 

@@ -2685,7 +2685,112 @@ def test_approval_summary_surfaces_scale_safety_confirmations():
             "confirm_scale_to_zero": True,
             "confirm_hpa_override": True,
         },
-    ) == "Scale Deployment demo/api to 0 replicas (scale-to-zero confirmed; HPA override confirmed)."
+    ) == "Scale (scale-to-zero confirmed; HPA override confirmed) Deployment demo/api to 0 replicas."
+
+
+def test_approval_summary_describes_structured_resource_patch_risk():
+    assert build_approval_summary(
+        "patch_resource",
+        {
+            "kind": "Deployment",
+            "namespace": "demo",
+            "name": "api",
+            "changes": [
+                {
+                    "type": "set_image",
+                    "container": "api",
+                    "expected_image": "registry.example/api:bad",
+                    "image": "registry.example/api:v2",
+                },
+                {
+                    "type": "set_label",
+                    "scope": "pod_template",
+                    "key": "app",
+                    "value": "api",
+                },
+            ],
+        },
+    ) == (
+        "Update (triggers a rollout) Deployment demo/api: change api image from registry.example/api:bad to "
+        "registry.example/api:v2; set pod-template label app=api."
+    )
+
+
+def test_approval_summary_warns_for_service_selector_changes():
+    summary = build_approval_summary(
+        "patch_resource",
+        {
+            "kind": "Service",
+            "namespace": "demo",
+            "name": "api",
+            "changes": [{"type": "set_service_selector", "key": "app", "value": "api"}],
+        },
+    )
+    assert summary == "Update (can redirect Service traffic) Service demo/api: set Service selector app=api."
+
+
+def test_approval_summary_keeps_patch_warning_before_truncated_details():
+    summary = build_approval_summary(
+        "patch_resource",
+        {
+            "kind": "Deployment",
+            "namespace": "demo",
+            "name": "api",
+            "changes": [{
+                "type": "set_image",
+                "container": "api",
+                "expected_image": f"registry.example/{'a' * 180}:old",
+                "image": f"registry.example/{'b' * 180}:new",
+            }],
+        },
+    )
+    assert "triggers a rollout" in summary
+    assert len(summary) <= 240
+
+
+def test_approval_summary_removes_unicode_format_controls():
+    summary = build_approval_summary(
+        "patch_resource",
+        {
+            "kind": "Deployment",
+            "namespace": "demo",
+            "name": "api",
+            "changes": [{
+                "type": "set_image",
+                "container": "api\u202egnp.exe",
+                "expected_image": "old:v1",
+                "image": "new:v1",
+            }],
+        },
+    )
+    assert "\u202e" not in summary
+    assert "api gnp.exe" in summary
+
+
+def test_approval_summary_describes_cronjob_template_effect_precisely():
+    summary = build_approval_summary(
+        "patch_resource",
+        {
+            "kind": "CronJob",
+            "namespace": "demo",
+            "name": "cleanup",
+            "changes": [{"type": "set_image", "container": "job", "expected_image": "old:v1", "image": "new:v1"}],
+        },
+    )
+    assert summary.startswith("Update (affects future Jobs) CronJob demo/cleanup:")
+    assert "rollout" not in summary
+
+
+def test_approval_summary_bounds_unvalidated_patch_change_analysis():
+    changes = [{"type": "set_label", "scope": "resource", "key": f"key-{index}", "value": "value"}
+               for index in range(100)]
+    changes[10] = {"type": "set_service_selector", "key": "app", "value": "api"}
+    summary = build_approval_summary(
+        "patch_resource",
+        {"kind": "Deployment", "namespace": "demo", "name": "api", "changes": changes},
+    )
+    assert "and 97 more" in summary
+    assert "redirect" not in summary
 
 
 @pytest.mark.asyncio

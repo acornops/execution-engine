@@ -22,6 +22,7 @@ ORCH_CLIENT_SOURCE = read("execution_engine/orchestrator_client.py")
 GATEWAY_CLIENT_SOURCE = read("execution_engine/gateway_client.py")
 TOOL_CLIENT_SOURCE = read("execution_engine/agent/tools.py")
 REACT_ENGINE_SOURCE = read("execution_engine/agent/react_engine.py")
+APPROVAL_SUMMARY_SOURCE = read("execution_engine/approval_summary.py")
 SKILL_LOADING_SOURCE = read("execution_engine/agent/skill_loading.py")
 SKILL_CONSTANTS_SOURCE = read("execution_engine/skill_constants.py")
 WORKER_RUN_SUPPORT_SOURCE = read("execution_engine/worker_run_support.py")
@@ -46,6 +47,8 @@ def expect_in(content: str, needle: str, message: str) -> None:
 expect_in(README, "[`docs/contracts/README.md`](docs/contracts/README.md)", "README contract link")
 expect_in(README, "[`docs/contracts/manifest.json`](docs/contracts/manifest.json)", "README manifest link")
 expect(MANIFEST["repo"] == "execution-engine", "Manifest repo")
+expect_in(DOC, "`patch_resource` approvals", "Structured patch approval contract")
+expect_in(APPROVAL_SUMMARY_SOURCE, 'clean_tool_name == "patch_resource"', "Structured patch approval implementation")
 
 for heading in (
     "# Execution-Engine Contracts",
