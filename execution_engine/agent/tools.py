@@ -125,6 +125,7 @@ class GatewayToolClient(ToolClient):
             agent_id=self.agent_id,
             agent_version=self.agent_version,
             trigger_id=self.trigger_id,
+            tool_call_id=call_id,
             tool=tool_name,
             arguments=arguments
         )

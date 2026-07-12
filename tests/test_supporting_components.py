@@ -91,6 +91,7 @@ async def test_gateway_tool_client_posts_valid_request_and_returns_gateway_respo
             "workspace_id": "ws",
             "target_id": "cluster",
             "target_type": "kubernetes",
+            "tool_call_id": "call-1",
             "tool": "allowed_tool",
             "arguments": {"query": "value"},
         }
@@ -114,7 +115,7 @@ async def test_gateway_tool_client_posts_valid_request_and_returns_gateway_respo
     )
 
     try:
-        response = await client.call_tool("allowed_tool", {"query": "value"})
+        response = await client.call_tool("allowed_tool", {"query": "value"}, call_id="call-1")
     finally:
         await client.close()
 

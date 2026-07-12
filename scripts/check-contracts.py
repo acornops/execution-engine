@@ -88,6 +88,7 @@ for field in (
     "usage: Usage",
     "timing: Timing",
     "class ToolCallRequest",
+    "tool_call_id: Optional[str] = Field(default=None, min_length=1, max_length=256)",
     "tool: str",
     "arguments: Dict[str, Any]",
     "class ToolApproval",

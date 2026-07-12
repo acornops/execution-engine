@@ -363,6 +363,7 @@ class ToolCallRequest(BaseModel):
     agent_id: Optional[str] = None
     agent_version: Optional[int] = None
     trigger_id: Optional[str] = None
+    tool_call_id: Optional[str] = Field(default=None, min_length=1, max_length=256)
     tool: str = Field(examples=["get_resource_logs"])
     arguments: Dict[str, Any]
 

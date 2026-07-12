@@ -53,13 +53,15 @@ def build_approval_summary(tool_name: str, arguments: Dict[str, Any]) -> str:
     if clean_tool_name == "scale_workload":
         target = _target_label(args, "workload")
         replicas = _clean_text(args.get("replicas"))
+        guards = []
+        if replicas == "0" and args.get("confirm_scale_to_zero") is True:
+            guards.append("scale-to-zero confirmed")
+        if args.get("confirm_hpa_override") is True:
+            guards.append("HPA override confirmed")
         if replicas:
-            return _cap_summary(f"Scale {target} to {replicas} replicas.")
+            suffix = f" ({'; '.join(guards)})" if guards else ""
+            return _cap_summary(f"Scale {target} to {replicas} replicas{suffix}.")
         return _cap_summary(f"Scale {target}.")
-
-    if clean_tool_name == "apply_remediation":
-        target = _target_label(args)
-        return _cap_summary(f"Apply the remediation plan to {target}.")
 
     target = _target_label(args)
     return _cap_summary(f"Run {_display_tool_name(clean_tool_name)} against {target}.")

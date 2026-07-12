@@ -121,6 +121,7 @@
         "agent_id",
         "agent_version",
         "trigger_id",
+        "tool_call_id",
         "tool",
         "arguments"
       ],

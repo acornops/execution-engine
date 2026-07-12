@@ -44,6 +44,9 @@ The execution engine owns run execution and talks only to the control plane and 
 ## LLM-Gateway Boundary Notes
 
 - Model streaming and MCP tool calls use the run-scoped JWT minted by the control plane.
+- MCP requests carry the model `call_id` as `tool_call_id`; the built-in bridge
+  uses it to derive stable AgentK write operation IDs without exposing it to
+  third-party MCP servers.
 - The gateway validates provider, model, tool, native-tool, max-output, and scope claims; execution-engine must not bypass or reinterpret those checks.
 - Frozen target skills use the internal model-only `_acornops_load_skill` pseudo-tool. It is intercepted by execution-engine and is not an MCP tool.
 - Local smoke tests may set `LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES=true`; this remains a local-only aid after normal JWT and scope validation.

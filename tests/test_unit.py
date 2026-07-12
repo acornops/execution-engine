@@ -2674,6 +2674,20 @@ def test_approval_summary_preserves_zero_replica_scale():
     ) == "Scale Deployment demo/api to 0 replicas."
 
 
+def test_approval_summary_surfaces_scale_safety_confirmations():
+    assert build_approval_summary(
+        "scale_workload",
+        {
+            "namespace": "demo",
+            "name": "api",
+            "kind": "Deployment",
+            "replicas": 0,
+            "confirm_scale_to_zero": True,
+            "confirm_hpa_override": True,
+        },
+    ) == "Scale Deployment demo/api to 0 replicas (scale-to-zero confirmed; HPA override confirmed)."
+
+
 @pytest.mark.asyncio
 async def test_react_engine_resumes_after_approved_write_result():
     llm_client = FakeStreamingLlmClient(
