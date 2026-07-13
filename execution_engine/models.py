@@ -34,9 +34,13 @@ class RunRequest(BaseModel):
     workflow_run_id: Optional[str] = None
     workflow_session_id: Optional[str] = None
     workflow_step_id: Optional[str] = None
+    workflow_execution_id: Optional[str] = None
+    step_index: Optional[int] = Field(default=None, ge=0)
+    attempt_number: Optional[int] = Field(default=None, ge=1)
     agent_id: Optional[str] = None
     agent_version: Optional[int] = None
     trigger_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
     session_id: str = Field(examples=[EXAMPLE_SESSION_ID])
     message_id: str = Field(examples=[EXAMPLE_MESSAGE_ID])
     requested_at: datetime
@@ -48,6 +52,10 @@ class RunRequest(BaseModel):
                 raise ValueError("target scope requires target_id and target_type")
             return self
 
+        if self.agent_id and not self.workflow_id:
+            if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
+                raise ValueError("agent target binding requires both target_id and target_type")
+            return self
         missing = [
             name
             for name, value in (
@@ -90,6 +98,10 @@ class Scope(BaseModel):
     workflow_run_id: Optional[str] = None
     workflow_session_id: Optional[str] = None
     workflow_step_id: Optional[str] = None
+    workflow_execution_id: Optional[str] = None
+    step_index: Optional[int] = Field(default=None, ge=0)
+    attempt_number: Optional[int] = Field(default=None, ge=1)
+    idempotency_key: Optional[str] = None
     agent_id: Optional[str] = None
     agent_version: Optional[int] = None
     trigger_id: Optional[str] = None
@@ -104,6 +116,10 @@ class Scope(BaseModel):
                 raise ValueError("target scope requires target_id and target_type")
             return self
 
+        if self.agent_id and not self.workflow_id:
+            if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
+                raise ValueError("agent target binding requires both target_id and target_type")
+            return self
         missing = [
             name
             for name, value in (

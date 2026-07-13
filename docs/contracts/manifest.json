@@ -16,13 +16,14 @@
         "POST /internal/v1/runs/{runId}/approvals/{approvalId}/execution-finished",
         "DELETE /internal/v1/runs/{runId}/continuation",
         "GET /internal/v1/sessions/{sessionId}/context?run_id=<runId>",
+        "GET /internal/v1/agent-runs/{runId}/context",
         "POST /internal/v1/runs/{runId}/events",
         "GET /internal/v1/runs/{runId}/event-cursor",
         "POST /internal/v1/runs/{runId}/commit"
       ],
       "bootstrapFields": [
         "contract_version",
-        "scope.{type,workspace_id,target_id?,target_type?,workflow_id?,workflow_run_id?,workflow_session_id?,workflow_step_id?,agent_id?,agent_version?,trigger_id?,session_id,run_id,user_id}",
+        "scope.{type,workspace_id,target_id?,target_type?,workflow_id?,workflow_run_id?,workflow_execution_id?,workflow_session_id?,workflow_step_id?,step_index?,attempt_number?,idempotency_key?,agent_id?,agent_version?,trigger_id?,session_id,run_id,user_id}",
         "policy.{max_runtime_ms,max_output_tokens,budget_cents,max_steps,max_tool_calls,max_duplicate_tool_calls}",
         "context.{endpoint,max_context_tokens}",
         "llm.{provider,model,temperature,mode,reasoning.{summary_mode,effort},gateway.{url,token,request_timeout_ms}}",
@@ -67,7 +68,10 @@
         "202 accepted_or_active",
         "200 terminal_idempotent_replay",
         "409 run_id_scope_mismatch",
-        "429 overloaded"
+        "429 overloaded",
+        "workspace scope may identify either a workflow step or a standalone Agent run",
+        "a selected-target workflow step dispatches with target scope plus target_id and target_type",
+        "idempotency_key is stable across at-least-once dispatch of one attempt"
       ]
     },
     "llm-gateway": {
