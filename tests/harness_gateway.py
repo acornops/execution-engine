@@ -70,9 +70,23 @@ async def stream(request: Request):
 @app.post("/api/v1/mcp/tool-call")
 async def tool_call(request: Request):
     data = await request.json()
+    result = f"Mock result for {data['tool']} with {data['arguments']}"
+    result_bytes = len(
+        json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
     return {
-        "result": f"Mock result for {data['tool']} with {data['arguments']}",
-        "is_error": False
+        "full_result": result,
+        "model_context": result,
+        "context_meta": {
+            "schema_version": "v1",
+            "strategy": "mcp_content",
+            "original_bytes": result_bytes,
+            "context_bytes": result_bytes,
+            "truncated": False,
+            "omissions": [],
+        },
+        "artifact_eligible": False,
+        "is_error": False,
     }
 
 if __name__ == "__main__":

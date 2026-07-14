@@ -203,3 +203,5 @@ async def test_tool_calling():
 
         tool_completed = next(e for e in events if e["type"] == "tool_call_completed")
         assert "Mock result for get_weather" in tool_completed["payload"]["result"]
+        assert tool_completed["payload"]["context_meta"]["strategy"] == "generic_fallback"
+        assert tool_completed["payload"]["is_error"] is False
