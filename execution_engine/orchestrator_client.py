@@ -193,6 +193,7 @@ class OrchestratorClient:
             orchestrator_requests_total.labels(endpoint="event_cursor", result="failure").inc()
             raise
 
+    @_retry("approval_execution_started")
     async def mark_tool_approval_execution_started(self, run_id: str, approval_id: str) -> ToolApproval:
         """Mark a tool approval as execution-started in the orchestrator."""
         url = f"{self.base_url}{INTERNAL_CONTROL_PLANE_PREFIX}/runs/{run_id}/approvals/{approval_id}/execution-started"
@@ -200,6 +201,21 @@ class OrchestratorClient:
         response.raise_for_status()
         return ToolApproval.model_validate(response.json())
 
+    @_retry("tool_result_artifact")
+    async def create_tool_result_artifact(
+        self, run_id: str, *, call_id: str, tool_name: str, result: Any, content_type: str = "application/json"
+    ) -> Dict[str, Any]:
+        """Persist one trusted complete tool result outside the run-event stream."""
+        url = f"{self.base_url}{INTERNAL_CONTROL_PLANE_PREFIX}/runs/{run_id}/tool-result-artifacts"
+        response = await self.client.post(
+            url,
+            json={"callId": call_id, "toolName": tool_name, "result": result, "contentType": content_type},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    @_retry("approval_execution_finished")
     async def mark_tool_approval_execution_finished(
         self,
         run_id: str,

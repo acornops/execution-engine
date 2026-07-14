@@ -79,3 +79,42 @@ tool_calls_total = Counter(
     "Tool calls by result",
     ["result"],
 )
+tool_result_artifacts_total = Counter(
+    "execution_engine_tool_result_artifacts_total",
+    "Complete tool result artifact persistence attempts",
+    ["result"],
+)
+tool_context_bytes = Histogram(
+    "execution_engine_tool_context_bytes",
+    "Model-facing tool context bytes",
+    buckets=(256, 1024, 4096, 12288, 24576, 49152),
+)
+tool_result_normalizations_total = Counter(
+    "execution_engine_tool_result_normalizations_total",
+    "Tool result normalization strategy",
+    ["strategy"],
+)
+tool_evidence_omissions_total = Counter(
+    "execution_engine_tool_evidence_omissions_total",
+    "Tool evidence observations omitted from the active run ledger",
+    ["reason"],
+)
+kubernetes_ownership_resolutions_total = Counter(
+    "execution_engine_kubernetes_ownership_resolutions_total",
+    "AgentK Pod ownership resolution outcomes",
+    ["status", "controller_kind", "error_code"],
+)
+patch_precondition_failures_total = Counter(
+    "execution_engine_patch_precondition_failures_total",
+    "UID or current-value preconditions that blocked a stale Kubernetes patch",
+)
+remediation_write_outcomes_total = Counter(
+    "execution_engine_remediation_write_outcomes_total",
+    "Built-in Kubernetes remediation write outcomes",
+    ["tool", "outcome"],
+)
+remediation_verification_outcomes_total = Counter(
+    "execution_engine_remediation_verification_outcomes_total",
+    "Post-write Kubernetes remediation verification outcomes",
+    ["tool", "outcome"],
+)

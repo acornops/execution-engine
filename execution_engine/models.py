@@ -324,8 +324,8 @@ class GatewayStreamDelta(BaseModel):
 class GatewayStreamToolCall(BaseModel):
     """A tool call requested by the LLM."""
     type: Literal["tool_call"]
-    call_id: str
-    tool: str
+    call_id: str = Field(min_length=1, max_length=256)
+    tool: str = Field(min_length=1, max_length=128)
     arguments: Dict[str, Any]
 
 class GatewayStreamReasoningSummaryDelta(BaseModel):
@@ -402,7 +402,10 @@ class ToolCallRequest(BaseModel):
 
 class ToolCallResponse(BaseModel):
     """Response from the Tool Gateway after executing a tool."""
-    result: Any
+    full_result: Any
+    model_context: Any
+    context_meta: Dict[str, Any]
+    artifact_eligible: bool = False
     is_error: bool = False
 
 class ToolApprovalRequest(BaseModel):

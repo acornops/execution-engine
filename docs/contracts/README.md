@@ -32,6 +32,12 @@ The execution engine owns run execution and talks only to the control plane and 
 - Cancellation is terminal from the engine's point of view; after cancellation wins, user-visible assistant output stops.
 - Approval continuations must not store gateway tokens or credentials. Resume reboots policy through control-plane bootstrap.
 - Event sequencing must resume from the control-plane cursor plus any higher local durable outbox cursor.
+- Tool responses separate `full_result` from `model_context`. Only bounded
+  structured context enters reasoning; eligible complete results are uploaded
+  as short-lived artifacts and never emitted in run events. The evidence ledger
+  is capped at 48 KiB and evicts whole superseded observations.
+  See [Tool Evidence Ledger](/docs/design-docs/tool-evidence-ledger.md) for
+  compaction, eviction, continuation, and approval rules.
 
 ## Control-Plane Boundary Notes
 
@@ -42,10 +48,16 @@ The execution engine owns run execution and talks only to the control plane and 
 - `WRITE_TOOL_OUTCOME_UNKNOWN` is fail-closed: do not retry a write after the approval execution state is already executing or unknown.
 - `patch_resource` approvals summarize semantic field intent and explicitly
   surface workload rollout, future CronJob, and Service-routing impact.
+- Workload `patch_resource` approval is fail-closed unless its exact UID and
+  image preconditions match a successful Pod ownership projection already in
+  the run evidence ledger. Direct controller-name reads do not authorize it.
 
 ## LLM-Gateway Boundary Notes
 
 - Model streaming and MCP tool calls use the run-scoped JWT minted by the control plane.
+- Bounded structured 4xx tool errors from llm-gateway, including
+  `TOOL_ARGS_INVALID`, remain visible to the ReAct loop so it can correct the
+  arguments instead of inventing a target or connectivity diagnosis.
 - MCP requests carry the model `call_id` as `tool_call_id`; the built-in bridge
   uses it to derive stable AgentK write operation IDs without exposing it to
   third-party MCP servers.

@@ -21,14 +21,13 @@ async def stream(request: Request):
 
     async def event_generator():
         # Check if we've already handled the tool call in this conversation.
-        # ReAct currently feeds tool outputs back as a user message block
-        # prefixed with "Live tool results:".
+        # ReAct feeds tool outputs back inside one bounded evidence message.
         has_tool_response = any(
             m.get("role") == "tool"
             or (
                 m.get("role") == "user"
                 and isinstance(m.get("content"), str)
-                and m["content"].startswith("Live tool results:")
+                and "Live tool results:" in m["content"]
             )
             for m in messages
         )

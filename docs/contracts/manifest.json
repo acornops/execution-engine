@@ -18,6 +18,7 @@
         "GET /internal/v1/sessions/{sessionId}/context?run_id=<runId>",
         "GET /internal/v1/agent-runs/{runId}/context",
         "POST /internal/v1/runs/{runId}/events",
+        "POST /internal/v1/runs/{runId}/tool-result-artifacts",
         "GET /internal/v1/runs/{runId}/event-cursor",
         "POST /internal/v1/runs/{runId}/commit"
       ],
@@ -60,6 +61,10 @@
         "run_cancelled",
         "run_completed"
       ],
+      "toolCallCompletedPayloadFields": ["call_id", "tool", "result", "context_meta", "artifact?", "artifactUnavailable?", "is_error"],
+      "toolCallCompletedContextMetaFields": ["schema_version", "strategy", "original_bytes", "context_bytes", "truncated", "omissions"],
+      "toolCallCompletedArtifactFields": ["id", "expires_at", "sha256", "uncompressed_bytes", "compressed_bytes", "content_type"],
+      "toolCallCompletedResultMaxBytes": 12288,
       "commitStatusValues": ["completed", "failed", "cancelled"],
       "commitAssistantMessageFields": ["content", "format"],
       "commitUsageFields": ["input_tokens", "output_tokens", "tool_calls", "reasoning_tokens?"],
@@ -129,7 +134,8 @@
         "tool",
         "arguments"
       ],
-      "toolCallResponseFields": ["result", "is_error"]
+      "toolCallResponseFields": ["full_result", "model_context", "context_meta", "artifact_eligible", "is_error"],
+      "toolCallResponseMaxBytes": 5242880
     }
   }
 }

@@ -21,6 +21,9 @@ Optional tuning:
 - `ORCH_RETRY_MAX_ELAPSED_SECONDS`
 - `GATEWAY_STREAM_IDLE_TIMEOUT_SECONDS`
 - `TOOL_CALL_TIMEOUT_SECONDS`
+- `TOOL_CONTEXT_MAX_BYTES`
+- `TOOL_CONTEXT_RUN_MAX_BYTES`
+- `TOOL_GATEWAY_MAX_RESPONSE_BYTES`
 - `DISPATCH_REQUEST_TIMEOUT_SECONDS`
 - `MAX_REQUEST_BODY_BYTES`
 - `TERMINAL_RUN_TTL_SECONDS`
@@ -45,6 +48,12 @@ Optional tuning:
 - `execution_engine_gateway_streams_total`
 - `execution_engine_gateway_stream_malformed_chunks_total`
 - `execution_engine_tool_calls_total`
+- `execution_engine_tool_result_artifacts_total`
+- `execution_engine_tool_result_normalizations_total`
+- `execution_engine_tool_evidence_omissions_total`
+- `execution_engine_kubernetes_ownership_resolutions_total`
+- `execution_engine_remediation_write_outcomes_total`
+- `execution_engine_remediation_verification_outcomes_total`
 
 ## Failure Runbooks
 
@@ -54,3 +63,4 @@ Optional tuning:
 - Terminal commit backlog: inspect `execution_engine_terminal_commits_pending`, control-plane commit endpoint health, and execution-engine logs for commit retry failures.
 - Event outbox backlog: inspect `execution_engine_event_outbox_pending`, event endpoint health, and retry metrics.
 - Duplicate dispatch conflict: confirm the upstream control plane is not reusing a `run_id` across different workspace, target, target type, session, or message identity.
+- Remediation verification failed or missing: inspect the run's compact `patch_resource` receipt and subsequent `get_resource` evidence. A failed outcome means the fresh image observation contradicted the requested image; missing means the run ended before a matching target observation.

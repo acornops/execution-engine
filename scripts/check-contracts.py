@@ -21,11 +21,16 @@ REASONING_SUMMARY_SOURCE = read("execution_engine/reasoning_summary_events.py")
 ORCH_CLIENT_SOURCE = read("execution_engine/orchestrator_client.py")
 GATEWAY_CLIENT_SOURCE = read("execution_engine/gateway_client.py")
 TOOL_CLIENT_SOURCE = read("execution_engine/agent/tools.py")
+CONFIG_SOURCE = read("execution_engine/config.py")
 REACT_ENGINE_SOURCE = read("execution_engine/agent/react_engine.py")
 APPROVAL_SUMMARY_SOURCE = read("execution_engine/approval_summary.py")
 SKILL_LOADING_SOURCE = read("execution_engine/agent/skill_loading.py")
 SKILL_CONSTANTS_SOURCE = read("execution_engine/skill_constants.py")
 WORKER_RUN_SUPPORT_SOURCE = read("execution_engine/worker_run_support.py")
+TOOL_EVENT_SOURCE = read("execution_engine/worker_tool_artifacts.py")
+TOOL_VALIDATION_SOURCE = read("execution_engine/agent/tool_validation.py")
+VERIFICATION_SOURCE = read("execution_engine/agent/remediation_verification.py")
+METRICS_SOURCE = read("execution_engine/util/metrics.py")
 CONTROL_PLANE_CONTRACT = MANIFEST["counterparts"]["control-plane"]
 GATEWAY_CONTRACT = MANIFEST["counterparts"]["llm-gateway"]
 
@@ -142,10 +147,11 @@ for needle in (
 for needle in (
     'url = f"{self.url}/api/v1/llm/generations:stream"',
     'payload["native_tools"] = native_tools',
-    'self._client.post(f"{self.url}/api/v1/mcp/tool-call"',
+    'f"{self.url}/api/v1/mcp/tool-call", payload_json',
+    "TOOL_GATEWAY_MAX_RESPONSE_BYTES",
     "if tool_name not in self.allowed_tools",
 ):
-    expect_in(GATEWAY_CLIENT_SOURCE + TOOL_CLIENT_SOURCE, needle, "LLM-gateway client")
+    expect_in(GATEWAY_CLIENT_SOURCE + TOOL_CLIENT_SOURCE + CONFIG_SOURCE, needle, "LLM-gateway client")
 
 for event_type in CONTROL_PLANE_CONTRACT["eventTypes"]:
     expect_in(
@@ -154,6 +160,29 @@ for event_type in CONTROL_PLANE_CONTRACT["eventTypes"]:
         "Worker event emission",
     )
     expect_in(MANIFEST_TEXT, event_type, "Manifest event")
+
+for field in (
+    CONTROL_PLANE_CONTRACT["toolCallCompletedPayloadFields"]
+    + CONTROL_PLANE_CONTRACT["toolCallCompletedContextMetaFields"]
+    + CONTROL_PLANE_CONTRACT["toolCallCompletedArtifactFields"]
+):
+    expect_in(TOOL_EVENT_SOURCE, field.removesuffix("?"), "Tool completion event field")
+
+expect(
+    CONTROL_PLANE_CONTRACT["toolCallCompletedResultMaxBytes"] == 12 * 1024,
+    "Tool completion event byte limit",
+)
+expect_in(TOOL_EVENT_SOURCE, "compact_tool_context", "Tool completion event byte limit implementation")
+expect_in(
+    TOOL_VALIDATION_SOURCE,
+    "REMEDIATION_TARGET_NOT_RESOLVED",
+    "Pod-derived remediation provenance enforcement",
+)
+expect_in(
+    VERIFICATION_SOURCE + METRICS_SOURCE,
+    "execution_engine_remediation_verification_outcomes_total",
+    "Post-write remediation verification metric",
+)
 
 for field in CONTROL_PLANE_CONTRACT["bootstrapFields"]:
     expect_in(MANIFEST_TEXT, field, "Manifest bootstrap field")

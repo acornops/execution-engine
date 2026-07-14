@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Any
 
 from execution_engine.models import (
     CommitRequest,
@@ -15,6 +16,16 @@ from execution_engine.run_registry import RunRegistry, RunState, RunStatus
 from execution_engine.skill_constants import INTERNAL_LOAD_TARGET_SKILL_TOOL
 from execution_engine.util.logging import bind_log_context, logger, reset_log_context
 from execution_engine.util.metrics import runs_cancelled_total
+
+
+def write_result_outcome_unknown(result: object, is_error: bool) -> bool:
+    """Return whether a failed write may have reached the target despite lacking a receipt."""
+    if not is_error or not isinstance(result, dict):
+        return False
+    if result.get("outcome") == "unknown":
+        return True
+    data = result.get("data")
+    return isinstance(data, dict) and data.get("outcome") == "unknown"
 
 
 def _skill_ref_sort_key(skill_ref: str) -> tuple[int, str]:
@@ -53,6 +64,58 @@ def approval_event_payload(approval: ToolApproval) -> dict[str, object]:
         "tool": approval.toolName,
     }
     return payload | ({"summary": approval.summary} if approval.summary is not None else {})
+
+
+def build_terminal_approval_resume(
+    approval: ToolApproval,
+    pending_call_id: str,
+    pending_tool_name: str,
+    pending_arguments: dict[str, Any],
+    allowed_tools: list[str],
+    tool_capabilities: dict[str, str],
+) -> dict[str, Any] | None:
+    """Build a resume result when an approval decision does not require tool dispatch."""
+    result: Any
+    if approval.status == "approved":
+        if approval.executionStatus in ("succeeded", "failed") and approval.toolResult is not None:
+            result = approval.toolResult
+            is_error = bool(approval.toolResultIsError)
+        elif approval.executionStatus in ("executing", "unknown"):
+            result = {
+                "code": "WRITE_TOOL_OUTCOME_UNKNOWN",
+                "message": (
+                    "A previous execution attempt did not record a final outcome. "
+                    "Inspect the target before retrying."
+                ),
+            }
+            is_error = True
+        elif pending_tool_name not in allowed_tools or tool_capabilities.get(pending_tool_name) != "write":
+            result = {
+                "code": "TOOL_NOT_ALLOWED_ON_RESUME",
+                "message": f"Tool '{pending_tool_name}' is no longer allowed for this run.",
+            }
+            is_error = True
+        else:
+            return None
+    elif approval.status == "rejected":
+        result = {
+            "code": "TOOL_APPROVAL_REJECTED",
+            "message": f"User rejected write action for tool '{pending_tool_name}'.",
+        }
+        is_error = True
+    else:
+        result = {
+            "code": "TOOL_APPROVAL_EXPIRED",
+            "message": f"Timed out waiting for approval for write tool '{pending_tool_name}'.",
+        }
+        is_error = True
+    return {
+        "call_id": pending_call_id,
+        "tool": pending_tool_name,
+        "arguments": pending_arguments,
+        "result": result,
+        "is_error": is_error,
+    }
 
 
 def build_skill_catalog_messages(skills: SkillConfig | None) -> list[Message]:

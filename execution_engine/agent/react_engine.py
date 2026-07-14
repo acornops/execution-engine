@@ -7,11 +7,29 @@ from contextlib import suppress
 from typing import Any, AsyncGenerator, AsyncIterator, Dict, List
 
 from execution_engine.agent.engine import AgentEngine
+from execution_engine.agent.remediation_verification import (
+    finalize_remediation_verifications,
+    observe_remediation_result,
+    record_remediation_verification_outcomes,
+)
 from execution_engine.agent.skill_loading import (
     SkillLoader,
     SkillLoadState,
     load_requested_skill_contexts,
     requested_skill_calls,
+)
+from execution_engine.agent.tool_context import (
+    build_evidence_entry,
+    build_tool_continuation_state,
+    compact_tool_context,
+    json_bytes,
+    merge_evidence,
+    set_tool_evidence_message,
+)
+from execution_engine.agent.tool_validation import (
+    preapproval_validation,
+    remediation_preapproval_validation,
+    tool_schema_map,
 )
 from execution_engine.agent.tools import ToolClient
 from execution_engine.approval_summary import build_approval_summary
@@ -20,9 +38,8 @@ from execution_engine.models import LLMConfig, Message, Policy, Scope
 
 
 class ReActAgentEngine(AgentEngine):
-    """
-    Implements a ReAct (Reasoning and Acting) loop.
-    """
+    """Implements a ReAct (Reasoning and Acting) loop."""
+
     def __init__(
         self,
         llm_client: GatewayLlmClient,
@@ -101,30 +118,6 @@ class ReActAgentEngine(AgentEngine):
         return None
 
     @staticmethod
-    def _tool_result_to_text(tool_result_content: Any, max_chars: int = 3000) -> str:
-        """Converts a tool result payload into compact text for follow-up prompts."""
-        if isinstance(tool_result_content, list):
-            parts: List[str] = []
-            for item in tool_result_content:
-                if isinstance(item, dict) and isinstance(item.get("text"), str):
-                    parts.append(item["text"])
-                elif isinstance(item, dict):
-                    parts.append(json.dumps(item, ensure_ascii=False))
-                else:
-                    parts.append(str(item))
-            text = "\n".join(part for part in parts if part)
-        elif isinstance(tool_result_content, dict):
-            text = json.dumps(tool_result_content, ensure_ascii=False)
-        else:
-            text = str(tool_result_content)
-
-        if not text:
-            return "(empty tool result)"
-        if len(text) > max_chars:
-            return f"{text[:max_chars]}...(truncated)"
-        return text
-
-    @staticmethod
     def _tool_call_signature(tool_name: str, arguments: Dict[str, Any]) -> str:
         """Builds a stable signature used to guard against repeated identical tool loops."""
         try:
@@ -132,39 +125,6 @@ class ReActAgentEngine(AgentEngine):
         except TypeError:
             serialized_args = str(arguments)
         return f"{tool_name}:{serialized_args}"
-
-    @staticmethod
-    def _tool_feedback_block(tool_name: str, arguments: Dict[str, Any], is_error: bool, result_payload: Any) -> str:
-        tool_result_text = ReActAgentEngine._tool_result_to_text(result_payload)
-        return "\n".join(
-            [
-                f"Tool: {tool_name}",
-                f"Arguments: {json.dumps(arguments, ensure_ascii=False)}",
-                f"Status: {'error' if is_error else 'success'}",
-                "Result:",
-                tool_result_text,
-            ]
-        )
-
-    @staticmethod
-    def _append_tool_feedback(llm_messages: List[Dict[str, str]], tool_feedback_blocks: List[str]) -> None:
-        llm_messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "Live tool results:\n\n"
-                    + "\n\n---\n\n".join(tool_feedback_blocks)
-                    + "\n\nUse the live tool results above to answer the user's latest request directly. "
-                    "If the user requested a specific change/remediation and the tool succeeded, lead with "
-                    "the action that was completed. Then summarize any remaining blocker or verification result. "
-                    "Do not expand a narrow remediation request into a broad remediation runbook unless the user "
-                    "asked for one. If the action did not resolve the visible symptom, explain that distinction "
-                    "briefly and call additional tools only when needed to answer or verify. "
-                    "Do not ask the user to run kubectl, SSH, or shell commands while tool access can perform the "
-                    "needed check or remediation. Avoid repeating identical tool calls unless there is new evidence."
-                ),
-            }
-        )
 
     @staticmethod
     def _write_unavailable_instruction(reason: str | None) -> str | None:
@@ -204,31 +164,6 @@ class ReActAgentEngine(AgentEngine):
             "events in run details."
         )
 
-    def _build_continuation_state(
-        self,
-        *,
-        llm_messages: List[Dict[str, str]],
-        current_step: int,
-        total_tool_calls: int,
-        duplicate_tool_call_counts: Dict[str, int],
-        tool_calls: List[Dict[str, Any]],
-        next_tool_index: int,
-        tool_feedback_blocks: List[str],
-        pending_tool_call: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        return {
-            "llm_messages": llm_messages,
-            "current_step": current_step,
-            "total_tool_calls": total_tool_calls,
-            "duplicate_tool_call_counts": duplicate_tool_call_counts,
-            "tool_calls": tool_calls,
-            "next_tool_index": next_tool_index,
-            "tool_feedback_blocks": tool_feedback_blocks,
-            "loaded_skill_refs": sorted(getattr(self, "_loaded_skill_refs", set())),
-            "loaded_skill_bytes": int(getattr(self, "_loaded_skill_bytes", 0)),
-            "pending_tool_call": pending_tool_call,
-        }
-
     async def run(
         self,
         messages: List[Message],
@@ -245,6 +180,7 @@ class ReActAgentEngine(AgentEngine):
         max_runtime_ms = max(int(self.policy.max_runtime_ms), 1000)
         max_tool_calls = max(int(getattr(self.policy, "max_tool_calls", 24)), 1)
         max_duplicate_tool_calls = max(int(getattr(self.policy, "max_duplicate_tool_calls", 2)), 1)
+        tool_schemas = tool_schema_map(tool_specs)
         terminated_by_guardrail = False
         guardrail_reason: str | None = None
         deadline = time.monotonic() + (max_runtime_ms / 1000.0)
@@ -257,6 +193,9 @@ class ReActAgentEngine(AgentEngine):
             active_tool_calls = list(continuation_state.get("tool_calls") or [])
             next_tool_index = int(continuation_state.get("next_tool_index") or 0)
             tool_feedback_blocks = list(continuation_state.get("tool_feedback_blocks") or [])
+            evidence_ledger = list(continuation_state.get("evidence_ledger") or [])
+            omitted = int(continuation_state.get("evidence_omitted") or 0)
+            pending_verifications = list(continuation_state.get("pending_verifications") or [])
             pending_tool_feedback = bool(tool_feedback_blocks)
             loaded_skill_refs = set(str(ref) for ref in continuation_state.get("loaded_skill_refs") or [])
             loaded_skill_bytes = int(continuation_state.get("loaded_skill_bytes") or 0)
@@ -267,7 +206,10 @@ class ReActAgentEngine(AgentEngine):
             duplicate_tool_call_counts: Dict[str, int] = {}
             active_tool_calls: List[Dict[str, Any]] = []
             next_tool_index = 0
-            tool_feedback_blocks: List[str] = []
+            tool_feedback_blocks: List[Dict[str, Any]] = []
+            evidence_ledger: List[Dict[str, Any]] = []
+            omitted = 0
+            pending_verifications: List[Dict[str, Any]] = []
             pending_tool_feedback = False
             loaded_skill_refs: set[str] = set()
             loaded_skill_bytes = 0
@@ -295,16 +237,42 @@ class ReActAgentEngine(AgentEngine):
             tool_name = str(resume_tool_result["tool"])
             arguments = dict(resume_tool_result.get("arguments") or {})
             call_id = str(resume_tool_result["call_id"])
-            result_payload = resume_tool_result["result"]
+            supplied_context = resume_tool_result.get("model_context")
+            result_payload = (
+                supplied_context
+                if supplied_context is not None
+                else compact_tool_context(resume_tool_result["result"])
+            )
             is_tool_error = bool(resume_tool_result["is_error"])
+            original_bytes = json_bytes(resume_tool_result["result"])
+            context_bytes = json_bytes(result_payload)
+            resume_truncated = supplied_context is None and result_payload != resume_tool_result["result"]
+            supplied_meta = resume_tool_result.get("context_meta")
+            context_meta = dict(supplied_meta) if isinstance(supplied_meta, dict) else {
+                "schema_version": "v1",
+                "strategy": "resume",
+                "original_bytes": original_bytes,
+                "context_bytes": context_bytes,
+                "truncated": resume_truncated,
+                "omissions": ([{
+                    "path": "$", "reason": "resume_context_byte_limit",
+                    "originalBytes": original_bytes,
+                }] if resume_truncated else []),
+            }
             yield {
                 "type": "tool_result",
                 "call_id": call_id,
                 "tool": tool_name,
                 "result": result_payload,
+                "full_result": resume_tool_result["result"],
+                "context_meta": context_meta,
+                "artifact_eligible": bool(resume_tool_result.get("artifact_eligible", False)),
                 "is_error": is_tool_error,
             }
-            tool_feedback_blocks.append(self._tool_feedback_block(tool_name, arguments, is_tool_error, result_payload))
+            tool_feedback_blocks.append(build_evidence_entry(tool_name, arguments, is_tool_error, result_payload))
+            record_remediation_verification_outcomes(observe_remediation_result(
+                pending_verifications, tool_name, arguments, is_tool_error, result_payload
+            ))
             next_tool_index += 1
 
         while current_step < max_steps:
@@ -321,7 +289,8 @@ class ReActAgentEngine(AgentEngine):
 
             if active_tool_calls and next_tool_index >= len(active_tool_calls):
                 if tool_feedback_blocks:
-                    self._append_tool_feedback(llm_messages, tool_feedback_blocks)
+                    evidence_ledger, omitted = merge_evidence(evidence_ledger, tool_feedback_blocks, omitted)
+                    set_tool_evidence_message(llm_messages, evidence_ledger, omitted)
                     yield {
                         "type": "reasoning",
                         "message": (
@@ -353,10 +322,31 @@ class ReActAgentEngine(AgentEngine):
                     call_id = tool_call["call_id"]
 
                     if not tool_call.get("accounted"):
-                        signature = self._tool_call_signature(tool_name, arguments)
-                        duplicate_tool_call_counts[signature] = duplicate_tool_call_counts.get(signature, 0) + 1
                         tool_call["accounted"] = True
                         total_tool_calls += 1
+                        active_tool_calls[next_tool_index] = tool_call
+
+                    validation = preapproval_validation(call_id, tool_name, arguments, tool_schemas)
+                    if validation is None:
+                        validation = remediation_preapproval_validation(
+                            call_id,
+                            tool_name,
+                            arguments,
+                            [*evidence_ledger, *tool_feedback_blocks],
+                        )
+                    if validation:
+                        validation_result, validation_chunk = validation
+                        yield validation_chunk
+                        tool_feedback_blocks.append(
+                            build_evidence_entry(tool_name, arguments, True, validation_result)
+                        )
+                        next_tool_index += 1
+                        continue
+
+                    if not tool_call.get("duplicate_accounted"):
+                        signature = self._tool_call_signature(tool_name, arguments)
+                        duplicate_tool_call_counts[signature] = duplicate_tool_call_counts.get(signature, 0) + 1
+                        tool_call["duplicate_accounted"] = True
                         active_tool_calls[next_tool_index] = tool_call
                         if duplicate_tool_call_counts[signature] > max_duplicate_tool_calls:
                             loop_message = (
@@ -371,7 +361,7 @@ class ReActAgentEngine(AgentEngine):
                                 "is_error": True,
                             }
                             tool_feedback_blocks.append(
-                                self._tool_feedback_block(
+                                build_evidence_entry(
                                     tool_name,
                                     arguments,
                                     True,
@@ -392,7 +382,7 @@ class ReActAgentEngine(AgentEngine):
                             "tool": tool_name,
                             "summary": build_approval_summary(str(tool_name), arguments),
                             "arguments": arguments,
-                            "continuation": self._build_continuation_state(
+                            "continuation": build_tool_continuation_state(
                                 llm_messages=llm_messages,
                                 current_step=current_step,
                                 total_tool_calls=total_tool_calls,
@@ -400,28 +390,59 @@ class ReActAgentEngine(AgentEngine):
                                 tool_calls=active_tool_calls,
                                 next_tool_index=next_tool_index,
                                 tool_feedback_blocks=tool_feedback_blocks,
+                                evidence_ledger=evidence_ledger,
+                                evidence_omitted=omitted,
+                                pending_verifications=pending_verifications,
+                                loaded_skill_refs=loaded_skill_refs,
+                                loaded_skill_bytes=loaded_skill_bytes,
                                 pending_tool_call=tool_call,
                             ),
                         }
                         return
 
                     tool_result = await self.tool_client.call_tool(tool_name, arguments, call_id=call_id)
-                    result_payload = tool_result["result"]
+                    result_payload = tool_result["model_context"]
                     is_tool_error = bool(tool_result["is_error"])
                     yield {
                         "type": "tool_result",
                         "call_id": call_id,
                         "tool": tool_name,
                         "result": result_payload,
+                        "full_result": tool_result["full_result"],
+                        "context_meta": tool_result["context_meta"],
+                        "artifact_eligible": tool_result["artifact_eligible"],
                         "is_error": is_tool_error,
                     }
+                    if (
+                        is_tool_error
+                        and self.tool_capabilities.get(str(tool_name), "write") == "write"
+                        and isinstance(tool_result.get("full_result"), dict)
+                        and tool_result["full_result"].get("outcome") == "unknown"
+                    ):
+                        yield {
+                            "type": "error",
+                            "code": "WRITE_TOOL_OUTCOME_UNKNOWN",
+                            "message": (
+                                "The write may have reached the target, but its final outcome could not be confirmed. "
+                                "Inspect the target before retrying this write."
+                            ),
+                            "retryable": False,
+                        }
+                        record_remediation_verification_outcomes(
+                            finalize_remediation_verifications(pending_verifications)
+                        )
+                        return
                     tool_feedback_blocks.append(
-                        self._tool_feedback_block(tool_name, arguments, is_tool_error, result_payload)
+                        build_evidence_entry(tool_name, arguments, is_tool_error, result_payload)
                     )
+                    record_remediation_verification_outcomes(observe_remediation_result(
+                        pending_verifications, tool_name, arguments, is_tool_error, result_payload
+                    ))
                     next_tool_index += 1
 
                 if tool_feedback_blocks:
-                    self._append_tool_feedback(llm_messages, tool_feedback_blocks)
+                    evidence_ledger, omitted = merge_evidence(evidence_ledger, tool_feedback_blocks, omitted)
+                    set_tool_evidence_message(llm_messages, evidence_ledger, omitted)
                     yield {
                         "type": "reasoning",
                         "message": (
@@ -456,7 +477,10 @@ class ReActAgentEngine(AgentEngine):
                     session_id=self.scope.session_id,
                     provider=llm_config.provider,
                     model=llm_config.model,
-                    messages=llm_messages,
+                    messages=[
+                        {"role": message["role"], "content": message["content"]}
+                        for message in llm_messages
+                    ],
                     temperature=llm_config.temperature,
                     max_output_tokens=self.policy.max_output_tokens,
                     scope_type=self.scope.type,
@@ -522,6 +546,10 @@ class ReActAgentEngine(AgentEngine):
                     if chunk["type"] == "tool_call" or chunk["type"] == "error":
                         yield chunk
             else:
+                if any(chunk.get("type") in {"final", "error"} for chunk in buffered_chunks):
+                    record_remediation_verification_outcomes(
+                        finalize_remediation_verifications(pending_verifications)
+                    )
                 for chunk in buffered_chunks:
                     yield chunk
 
@@ -585,7 +613,10 @@ class ReActAgentEngine(AgentEngine):
                     session_id=self.scope.session_id,
                     provider=llm_config.provider,
                     model=llm_config.model,
-                    messages=llm_messages,
+                    messages=[
+                        {"role": message["role"], "content": message["content"]}
+                        for message in llm_messages
+                    ],
                     temperature=llm_config.temperature,
                     max_output_tokens=self.policy.max_output_tokens,
                     scope_type=self.scope.type,
@@ -606,4 +637,13 @@ class ReActAgentEngine(AgentEngine):
                     break
                 if chunk.get("type") == "tool_call":
                     continue
+                if chunk.get("type") in {"final", "error"}:
+                    record_remediation_verification_outcomes(
+                        finalize_remediation_verifications(pending_verifications)
+                    )
                 yield chunk
+
+        record_remediation_verification_outcomes(finalize_remediation_verifications(
+            pending_verifications,
+            "cancelled" if cancel_event.is_set() else "missing",
+        ))

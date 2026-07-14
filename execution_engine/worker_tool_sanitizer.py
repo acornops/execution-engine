@@ -6,9 +6,10 @@ import re
 from typing import Any
 
 TOOL_METADATA_MAX_CHARS = 500
-TOOL_SCHEMA_MAX_DEPTH = 8
+TOOL_SCHEMA_MAX_DEPTH = 16
 TOOL_SCHEMA_MAX_ITEMS = 100
 TOOL_SCHEMA_TEXT_KEYS = {"description", "markdownDescription", "title"}
+_OMIT_TOOL_SCHEMA_VALUE = object()
 TOOL_METADATA_INJECTION_PATTERNS = (
     re.compile(
         r"\bignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions|messages|rules)\b",
@@ -43,8 +44,16 @@ def _sanitize_tool_text(value: Any) -> str | None:
 def _sanitize_tool_schema_value(
     value: Any, *, key: str | None = None, depth: int = 0
 ) -> Any:
+    if key in TOOL_SCHEMA_TEXT_KEYS and isinstance(value, str):
+        return _sanitize_tool_text(value) or _OMIT_TOOL_SCHEMA_VALUE
+    if isinstance(value, str):
+        if _contains_prompt_injection_text(value):
+            return ""
+        return value[:TOOL_METADATA_MAX_CHARS]
+    if value is None or isinstance(value, bool | int | float):
+        return value
     if depth > TOOL_SCHEMA_MAX_DEPTH:
-        return None
+        return {} if isinstance(value, dict) else _OMIT_TOOL_SCHEMA_VALUE
     if isinstance(value, dict):
         sanitized: dict[str, Any] = {}
         for item_key, item_value in list(value.items())[:TOOL_SCHEMA_MAX_ITEMS]:
@@ -53,24 +62,18 @@ def _sanitize_tool_schema_value(
             sanitized_value = _sanitize_tool_schema_value(
                 item_value, key=item_key, depth=depth + 1
             )
-            if sanitized_value is None and item_key in TOOL_SCHEMA_TEXT_KEYS:
+            if sanitized_value is _OMIT_TOOL_SCHEMA_VALUE:
                 continue
             sanitized[item_key] = sanitized_value
         return sanitized
     if isinstance(value, list):
         return [
-            _sanitize_tool_schema_value(item, depth=depth + 1)
+            sanitized_item
             for item in value[:TOOL_SCHEMA_MAX_ITEMS]
+            if (sanitized_item := _sanitize_tool_schema_value(item, depth=depth + 1))
+            is not _OMIT_TOOL_SCHEMA_VALUE
         ]
-    if key in TOOL_SCHEMA_TEXT_KEYS and isinstance(value, str):
-        return _sanitize_tool_text(value)
-    if isinstance(value, str):
-        if _contains_prompt_injection_text(value):
-            return ""
-        return value[:TOOL_METADATA_MAX_CHARS]
-    if value is None or isinstance(value, bool | int | float):
-        return value
-    return None
+    return _OMIT_TOOL_SCHEMA_VALUE
 
 
 def sanitize_tool_spec_for_llm(spec: dict[str, Any]) -> dict[str, Any] | None:
@@ -83,7 +86,7 @@ def sanitize_tool_spec_for_llm(spec: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(input_schema, dict):
         input_schema = {"type": "object", "additionalProperties": True}
     sanitized_schema = _sanitize_tool_schema_value(input_schema)
-    if not isinstance(sanitized_schema, dict):
+    if sanitized_schema is _OMIT_TOOL_SCHEMA_VALUE or not isinstance(sanitized_schema, dict):
         sanitized_schema = {"type": "object", "additionalProperties": True}
     return {
         "name": name,

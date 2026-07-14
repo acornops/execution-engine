@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Callable
+from typing import Any, Callable
 
 from execution_engine.agent.react_engine import ReActAgentEngine
 from execution_engine.agent.tools import GatewayToolClient, ToolClientStub
@@ -31,10 +31,13 @@ from execution_engine.worker_run_support import (
     build_skill_loader_tool_spec,
     build_skill_names_by_ref,
     build_target_insights_context_event_payload,
+    build_terminal_approval_resume,
     commit_queued_cancellation,
     emit_skill_context_event,
     start_event_manager,
+    write_result_outcome_unknown,
 )
+from execution_engine.worker_tool_artifacts import persist_tool_result_artifact, tool_result_event_payload
 from execution_engine.worker_tool_sanitizer import sanitize_tool_spec_for_llm
 
 
@@ -210,6 +213,11 @@ class Worker:
                 timeout_ms=snapshot.llm.gateway.request_timeout_ms or 60000
             )
 
+            tool_capabilities = {
+                str(spec.get("name")): "read" if spec.get("capability") == "read" else "write"
+                for spec in snapshot.tools.tool_specs
+                if isinstance(spec, dict) and spec.get("name")
+            }
             if snapshot.tools.allowed_tools:
                 tool_client = GatewayToolClient(
                     url=snapshot.tools.gateway.url,
@@ -219,6 +227,7 @@ class Worker:
                     target_type=state.target_type,
                     run_id=state.run_id,
                     allowed_tools=snapshot.tools.allowed_tools,
+                    tool_capabilities=tool_capabilities,
                     scope_type=state.scope_type,
                     workflow_id=state.workflow_id,
                     workflow_run_id=state.workflow_run_id,
@@ -228,14 +237,8 @@ class Worker:
                     agent_version=snapshot.scope.agent_version,
                     trigger_id=snapshot.scope.trigger_id,
                 )
-                tool_capabilities = {
-                    str(spec.get("name")): "write" if spec.get("capability") == "write" else "read"
-                    for spec in snapshot.tools.tool_specs
-                    if isinstance(spec, dict) and spec.get("name")
-                }
             else:
                 tool_client = ToolClientStub()
-                tool_capabilities = {}
 
             allowed_tool_names = set(snapshot.tools.allowed_tools)
             llm_tool_specs = [
@@ -254,51 +257,23 @@ class Worker:
             resume_tool_result = None
             continuation_state = continuation.state if continuation else None
             unknown_write_outcome = False
+            executed_tool_result: dict[str, Any] | None = None
             if continuation:
                 approval = continuation.approval
                 pending_tool_call = dict(continuation.state.get("pending_tool_call") or {})
                 pending_tool_name = str(pending_tool_call.get("tool") or approval.toolName)
                 pending_arguments = dict(pending_tool_call.get("arguments") or approval.arguments or {})
                 pending_call_id = str(pending_tool_call.get("call_id") or approval.toolCallId)
+                resume_tool_result = build_terminal_approval_resume(
+                    approval,
+                    pending_call_id,
+                    pending_tool_name,
+                    pending_arguments,
+                    snapshot.tools.allowed_tools,
+                    tool_capabilities,
+                )
                 if approval.status == "approved":
-                    if approval.executionStatus in ("succeeded", "failed") and approval.toolResult is not None:
-                        resume_tool_result = {
-                            "call_id": pending_call_id,
-                            "tool": pending_tool_name,
-                            "arguments": pending_arguments,
-                            "result": approval.toolResult,
-                            "is_error": bool(approval.toolResultIsError),
-                        }
-                    elif approval.executionStatus in ("executing", "unknown"):
-                        resume_tool_result = {
-                            "call_id": pending_call_id,
-                            "tool": pending_tool_name,
-                            "arguments": pending_arguments,
-                            "result": {
-                                "code": "WRITE_TOOL_OUTCOME_UNKNOWN",
-                                "message": (
-                                    "A previous execution attempt did not record a final outcome. "
-                                    "Inspect the target before retrying."
-                                ),
-                            },
-                            "is_error": True,
-                        }
-                        unknown_write_outcome = True
-                    elif (
-                        pending_tool_name not in snapshot.tools.allowed_tools
-                        or tool_capabilities.get(pending_tool_name) != "write"
-                    ):
-                        resume_tool_result = {
-                            "call_id": pending_call_id,
-                            "tool": pending_tool_name,
-                            "arguments": pending_arguments,
-                            "result": {
-                                "code": "TOOL_NOT_ALLOWED_ON_RESUME",
-                                "message": f"Tool '{pending_tool_name}' is no longer allowed for this run.",
-                            },
-                            "is_error": True,
-                        }
-                    else:
+                    if resume_tool_result is None:
                         started = await self.orchestrator_client.mark_tool_approval_execution_started(
                             state.run_id,
                             approval.id,
@@ -321,6 +296,18 @@ class Worker:
                                 "is_error": True,
                             }
                             unknown_write_outcome = True
+                        elif started.executionStatus in {"succeeded", "failed"}:
+                            resume_tool_result = {
+                                "call_id": pending_call_id,
+                                "tool": pending_tool_name,
+                                "arguments": pending_arguments,
+                                "result": started.toolResult,
+                                "is_error": bool(
+                                    started.toolResultIsError
+                                    if started.toolResultIsError is not None
+                                    else started.executionStatus == "failed"
+                                ),
+                            }
                         else:
                             emit_event("tool_call_started", {
                                 "call_id": pending_call_id,
@@ -332,13 +319,14 @@ class Worker:
                                 pending_arguments,
                                 call_id=pending_call_id,
                             )
+                            executed_tool_result = tool_result
                             if state.cancel_event.is_set():
                                 finish_cancelled_run()
                                 return
                             finished = await self.orchestrator_client.mark_tool_approval_execution_finished(
                                 state.run_id,
                                 approval.id,
-                                tool_result["result"],
+                                tool_result["model_context"],
                                 bool(tool_result["is_error"]),
                             )
                             resume_tool_result = {
@@ -348,7 +336,7 @@ class Worker:
                                 "result": (
                                     finished.toolResult
                                     if finished.toolResult is not None
-                                    else tool_result["result"]
+                                    else tool_result["model_context"]
                                 ),
                                 "is_error": bool(
                                     finished.toolResultIsError
@@ -356,28 +344,18 @@ class Worker:
                                     else tool_result["is_error"]
                                 ),
                             }
-                elif approval.status == "rejected":
-                    resume_tool_result = {
-                        "call_id": pending_call_id,
-                        "tool": pending_tool_name,
-                        "arguments": pending_arguments,
-                        "result": {
-                            "code": "TOOL_APPROVAL_REJECTED",
-                            "message": f"User rejected write action for tool '{pending_tool_name}'.",
-                        },
-                        "is_error": True,
-                    }
-                else:
-                    resume_tool_result = {
-                        "call_id": pending_call_id,
-                        "tool": pending_tool_name,
-                        "arguments": pending_arguments,
-                        "result": {
-                            "code": "TOOL_APPROVAL_EXPIRED",
-                            "message": f"Timed out waiting for approval for write tool '{pending_tool_name}'.",
-                        },
-                        "is_error": True,
-                    }
+                            if (
+                                resume_tool_result["result"] == tool_result["model_context"]
+                                and resume_tool_result["is_error"] == bool(tool_result["is_error"])
+                            ):
+                                resume_tool_result.update({
+                                    "model_context": tool_result["model_context"],
+                                    "context_meta": tool_result["context_meta"],
+                                    "artifact_eligible": tool_result["artifact_eligible"],
+                                })
+                if approval.status == "approved" and resume_tool_result is not None:
+                    unknown_write_outcome |= write_result_outcome_unknown(
+                        resume_tool_result["result"], bool(resume_tool_result["is_error"]))
                 event_type = {
                     "approved": "tool_approval_approved",
                     "rejected": "tool_approval_rejected",
@@ -386,8 +364,24 @@ class Worker:
                 if event_type:
                     emit_event(event_type, approval_event_payload(approval))
                 if unknown_write_outcome:
+                    if executed_tool_result is not None:
+                        completion_chunk = {
+                            "type": "tool_result",
+                            "call_id": pending_call_id,
+                            "tool": pending_tool_name,
+                            "result": executed_tool_result["model_context"],
+                            **executed_tool_result,
+                        }
+                        artifact, artifact_unavailable = await persist_tool_result_artifact(
+                            self.orchestrator_client, state.run_id, completion_chunk
+                        )
+                        emit_event(
+                            "tool_call_completed",
+                            tool_result_event_payload(completion_chunk, artifact, artifact_unavailable),
+                        )
                     full_text = (
-                        "The approved write action may have started, but AcornOps did not record a final result. "
+                        "The approved write action may have reached the target, but AcornOps could not confirm "
+                        "its final outcome. "
                         "Inspect the target before retrying this write."
                     )
                     emit_event("run_failed", {
@@ -471,6 +465,9 @@ class Worker:
                                 "arguments": chunk["arguments"]
                             })
                         elif chunk["type"] == "tool_result":
+                            artifact, artifact_unavailable = await persist_tool_result_artifact(
+                                self.orchestrator_client, state.run_id, chunk
+                            )
                             tool_result_events.append(
                                 {
                                     "tool": chunk["tool"],
@@ -478,12 +475,10 @@ class Worker:
                                     "is_error": bool(chunk["is_error"]),
                                 }
                             )
-                            emit_event("tool_call_completed", {
-                                "call_id": chunk["call_id"],
-                                "tool": chunk["tool"],
-                                "result": chunk["result"],
-                                "is_error": chunk["is_error"]
-                            })
+                            emit_event(
+                                "tool_call_completed",
+                                tool_result_event_payload(chunk, artifact, artifact_unavailable),
+                            )
                         elif str(chunk["type"]).startswith("skill_context_"):
                             summary_events.flush(force=True)
                             emit_skill_context_event(chunk, skill_names_by_ref, emit_event)

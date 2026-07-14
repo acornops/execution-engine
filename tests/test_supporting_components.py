@@ -19,6 +19,7 @@ import execution_engine.worker_fallbacks as worker_fallbacks_module
 from execution_engine.agent.tools import GatewayToolClient, ToolClientStub
 from execution_engine.gateway_client import GatewayLlmClient
 from execution_engine.readiness import DependencyStatus
+from execution_engine.worker_tool_artifacts import persist_tool_result_artifact, tool_result_event_payload
 
 SUCCESS_STREAM_RESPONSE_DATA = (
     '{"type":"delta","text":"hello"}\n'
@@ -72,13 +73,13 @@ async def test_gateway_tool_client_rejects_unlisted_tool():
     finally:
         await client.close()
 
-    assert response == {
-        "result": {
-            "code": "TOOL_NOT_ALLOWED",
-            "message": "Tool 'forbidden_tool' is not allowed for this run.",
-        },
-        "is_error": True,
+    assert response["full_result"] == {
+        "code": "TOOL_NOT_ALLOWED",
+        "message": "Tool 'forbidden_tool' is not allowed for this run.",
     }
+    assert response["model_context"] == response["full_result"]
+    assert response["artifact_eligible"] is False
+    assert response["is_error"] is True
 
 
 @pytest.mark.asyncio
@@ -95,7 +96,20 @@ async def test_gateway_tool_client_posts_valid_request_and_returns_gateway_respo
             "tool": "allowed_tool",
             "arguments": {"query": "value"},
         }
-        return httpx.Response(200, json={"result": {"ok": True}, "is_error": False}, request=request)
+        return httpx.Response(200, json={
+            "full_result": {"ok": True},
+            "model_context": {"ok": True},
+            "context_meta": {
+                "schema_version": "v1",
+                "strategy": "mcp_content",
+                "original_bytes": 11,
+                "context_bytes": 11,
+                "truncated": False,
+                "omissions": [],
+            },
+            "artifact_eligible": False,
+            "is_error": False,
+        }, request=request)
 
     real_async_client = httpx.AsyncClient
     monkeypatch.setattr(
@@ -119,7 +133,117 @@ async def test_gateway_tool_client_posts_valid_request_and_returns_gateway_respo
     finally:
         await client.close()
 
-    assert response == {"result": {"ok": True}, "is_error": False}
+    assert response["full_result"] == {"ok": True}
+    assert response["model_context"] == {"ok": True}
+    assert response["context_meta"]["strategy"] == "generic_fallback"
+    assert response["is_error"] is False
+
+
+@pytest.mark.asyncio
+async def test_gateway_tool_client_rejects_oversized_producer_projection(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    model_context = {
+        "schemaVersion": "acornops.model-context.v1",
+        "tool": "patch_resource",
+        "status": "success",
+        "summary": "Patched resource.",
+        "data": {"padding": "x" * (12 * 1024)},
+        "omissions": [],
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "full_result": {"success": True},
+            "model_context": model_context,
+            "context_meta": {
+                "schema_version": "v1",
+                "strategy": "producer_projection",
+                "original_bytes": 16,
+                "context_bytes": tools_module.json_bytes(model_context),
+                "truncated": False,
+                "omissions": [],
+            },
+            "artifact_eligible": False,
+            "is_error": False,
+        }, request=request)
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        tools_module.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: real_async_client(
+            *args, transport=httpx.MockTransport(handler), **kwargs
+        ),
+    )
+    client = GatewayToolClient(
+        url="http://gateway", token="token", workspace_id="ws", target_id="cluster",
+        target_type="kubernetes", run_id="run-1", allowed_tools=["patch_resource"],
+        tool_capabilities={"patch_resource": "write"},
+    )
+    try:
+        response = await client.call_tool("patch_resource", {"name": "api"})
+    finally:
+        await client.close()
+
+    assert response["full_result"] == {
+        "code": "TOOL_RESULT_CONTRACT_INVALID",
+        "message": "Trusted tool projection failed execution-engine validation.",
+        "retryable": False,
+        "outcome": "unknown",
+    }
+
+
+@pytest.mark.asyncio
+async def test_gateway_tool_client_preserves_valid_producer_projection(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    model_context = {
+        "schemaVersion": "acornops.model-context.v1",
+        "tool": "get_resource",
+        "status": "success",
+        "summary": "Inspected Pod demo/api.",
+        "data": {"resource": {"kind": "Pod", "name": "api", "namespace": "demo"}},
+        "omissions": [],
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "full_result": {"resource": {"kind": "Pod"}},
+            "model_context": model_context,
+            "context_meta": {
+                "schema_version": "v1",
+                "strategy": "producer_projection",
+                "original_bytes": 27,
+                "context_bytes": tools_module.json_bytes(model_context),
+                "truncated": False,
+                "omissions": [],
+            },
+            "artifact_eligible": True,
+            "is_error": False,
+        }, request=request)
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        tools_module.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: real_async_client(
+            *args, transport=httpx.MockTransport(handler), **kwargs
+        ),
+    )
+    client = GatewayToolClient(
+        url="http://gateway", token="token", workspace_id="ws", target_id="cluster",
+        target_type="kubernetes", run_id="run-1", allowed_tools=["get_resource"],
+        tool_capabilities={"get_resource": "read"},
+    )
+    try:
+        response = await client.call_tool("get_resource", {"name": "api"})
+    finally:
+        await client.close()
+
+    assert response["model_context"] == model_context
+    assert response["context_meta"]["strategy"] == "producer_projection"
+    assert response["artifact_eligible"] is True
 
 
 def test_internal_transport_httpx_kwargs_are_disabled_by_default(monkeypatch: pytest.MonkeyPatch):
@@ -157,7 +281,10 @@ def test_internal_transport_httpx_kwargs_omit_client_cert_when_not_required(monk
 @pytest.mark.parametrize(
     ("side_effect", "expected"),
     [
-        (httpx.TimeoutException("timed out"), {"code": "TOOL_TIMEOUT", "message": "Tool 'allowed_tool' timed out."}),
+        (
+            httpx.TimeoutException("timed out"),
+            {"code": "TOOL_TIMEOUT", "message": "Tool 'allowed_tool' timed out.", "retryable": True},
+        ),
         (
             httpx.HTTPStatusError(
                 "boom",
@@ -166,7 +293,10 @@ def test_internal_transport_httpx_kwargs_omit_client_cert_when_not_required(monk
             ),
             {"code": "TOOL_HTTP_ERROR", "message": "Tool gateway returned HTTP 503."},
         ),
-        (httpx.RequestError("network down"), {"code": "TOOL_REQUEST_ERROR", "message": "network down"}),
+        (
+            httpx.RequestError("network down"),
+            {"code": "TOOL_REQUEST_ERROR", "message": "Tool gateway request failed.", "retryable": True},
+        ),
     ],
 )
 async def test_gateway_tool_client_maps_transport_errors(
@@ -174,8 +304,6 @@ async def test_gateway_tool_client_maps_transport_errors(
     side_effect: Exception,
     expected: dict[str, str],
 ):
-    client_mock = MagicMock(post=AsyncMock(side_effect=side_effect), aclose=AsyncMock())
-    monkeypatch.setattr(tools_module.httpx, "AsyncClient", lambda *args, **kwargs: client_mock)
     client = GatewayToolClient(
         url="http://gateway",
         token="token",
@@ -184,12 +312,74 @@ async def test_gateway_tool_client_maps_transport_errors(
         target_type="kubernetes",
         run_id="run-1",
         allowed_tools=["allowed_tool"],
+        tool_capabilities={"allowed_tool": "read"},
     )
+    monkeypatch.setattr(client, "_post_bounded", AsyncMock(side_effect=side_effect))
     try:
         response = await client.call_tool("allowed_tool", {"query": "value"})
-        assert response == {"result": expected, "is_error": True}
+        assert response["full_result"] == expected
+        assert response["model_context"] == expected
+        assert response["artifact_eligible"] is False
+        assert response["is_error"] is True
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_tool_client_marks_ambiguous_write_failure_unknown(monkeypatch: pytest.MonkeyPatch):
+    client = GatewayToolClient(
+        url="http://gateway", token="token", workspace_id="ws", target_id="cluster",
+        target_type="kubernetes", run_id="run-1", allowed_tools=["patch_resource"],
+        tool_capabilities={"patch_resource": "write"},
+    )
+    monkeypatch.setattr(
+        client,
+        "_post_bounded",
+        AsyncMock(side_effect=httpx.TimeoutException("timed out")),
+    )
+    try:
+        response = await client.call_tool("patch_resource", {"name": "api"})
+    finally:
+        await client.close()
+
+    assert response["full_result"] == {
+        "code": "TOOL_TIMEOUT", "message": "Tool 'patch_resource' timed out.",
+        "retryable": False, "outcome": "unknown",
+    }
+
+
+@pytest.mark.asyncio
+async def test_gateway_tool_client_bounds_normalized_response_and_marks_write_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * 33, request=request)
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        tools_module.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: real_async_client(
+            *args, transport=httpx.MockTransport(handler), **kwargs
+        ),
+    )
+    monkeypatch.setattr(tools_module.settings, "TOOL_GATEWAY_MAX_RESPONSE_BYTES", 32)
+    client = GatewayToolClient(
+        url="http://gateway", token="token", workspace_id="ws", target_id="cluster",
+        target_type="kubernetes", run_id="run-1", allowed_tools=["patch_resource"],
+        tool_capabilities={"patch_resource": "write"},
+    )
+    try:
+        response = await client.call_tool("patch_resource", {"name": "api"})
+    finally:
+        await client.close()
+
+    assert response["full_result"] == {
+        "code": "TOOL_RESULT_TOO_LARGE",
+        "message": "Tool gateway response exceeded the supported size limit.",
+        "retryable": False,
+        "outcome": "unknown",
+    }
 
 
 @pytest.mark.asyncio
@@ -719,3 +909,85 @@ def test_build_tool_only_fallback_summarizes_only_latest_four_events():
     assert "`second` (success)" in summary
     assert "`third` (error)" in summary
     assert "`fifth` (success)" in summary
+
+
+@pytest.mark.asyncio
+async def test_artifact_failure_keeps_full_result_out_of_durable_event():
+    orchestrator = MagicMock()
+    orchestrator.create_tool_result_artifact = AsyncMock(side_effect=RuntimeError("storage unavailable"))
+    chunk = {
+        "call_id": "call-1", "tool": "get_resource", "result": {"summary": "compact"},
+        "full_result": {"secret_sentinel": "must-not-enter-events"},
+        "context_meta": {"context_bytes": 20}, "artifact_eligible": True, "is_error": False,
+    }
+
+    artifact, unavailable = await persist_tool_result_artifact(orchestrator, "run-1", chunk)
+    payload = tool_result_event_payload(chunk, artifact, unavailable)
+
+    assert artifact is None
+    assert unavailable is True
+    assert payload["artifactUnavailable"] is True
+    assert "full_result" not in payload
+    assert "must-not-enter-events" not in str(payload)
+
+
+@pytest.mark.asyncio
+async def test_invalid_artifact_receipt_is_reported_as_unavailable():
+    orchestrator = MagicMock()
+    orchestrator.create_tool_result_artifact = AsyncMock(return_value={"id": "incomplete"})
+    chunk = {
+        "call_id": "call-1", "tool": "get_resource", "result": {"summary": "compact"},
+        "full_result": {"resource": {}}, "context_meta": {"context_bytes": 20},
+        "artifact_eligible": True, "is_error": False,
+    }
+
+    artifact, unavailable = await persist_tool_result_artifact(orchestrator, "run-1", chunk)
+
+    assert artifact is None
+    assert unavailable is True
+
+
+@pytest.mark.asyncio
+async def test_valid_artifact_receipt_is_reduced_to_event_metadata():
+    orchestrator = MagicMock()
+    orchestrator.create_tool_result_artifact = AsyncMock(return_value={
+        "id": "123e4567-e89b-42d3-a456-426614174000",
+        "expires_at": "2026-07-20T00:00:00.000Z",
+        "sha256": "a" * 64,
+        "uncompressed_bytes": 100,
+        "compressed_bytes": 80,
+        "content_type": "application/json",
+        "unexpected": "must-not-enter-events",
+    })
+    chunk = {
+        "call_id": "call-1", "tool": "get_resource", "result": {"summary": "compact"},
+        "full_result": {"resource": {}}, "context_meta": {"context_bytes": 20},
+        "artifact_eligible": True, "is_error": False,
+    }
+
+    artifact, unavailable = await persist_tool_result_artifact(orchestrator, "run-1", chunk)
+    payload = tool_result_event_payload(chunk, artifact, unavailable)
+
+    assert unavailable is False
+    assert payload["artifact"]["id"] == "123e4567-e89b-42d3-a456-426614174000"
+    assert "unexpected" not in payload["artifact"]
+
+
+def test_local_tool_result_is_normalized_for_the_durable_event_contract():
+    payload = tool_result_event_payload(
+        {
+            "call_id": "call-1",
+            "tool": "get_resource",
+            "result": {"code": "TOOL_CALL_REPEAT_LIMIT", "detail": "x" * (13 * 1024)},
+            "is_error": True,
+        },
+        None,
+        False,
+    )
+
+    assert set(payload) == {"call_id", "tool", "result", "context_meta", "is_error"}
+    assert payload["context_meta"]["schema_version"] == "v1"
+    assert payload["context_meta"]["strategy"] == "local_structural_fallback"
+    assert payload["context_meta"]["context_bytes"] <= 12 * 1024
+    assert payload["context_meta"]["truncated"] is True
+    assert payload["is_error"] is True

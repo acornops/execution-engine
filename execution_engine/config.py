@@ -3,7 +3,7 @@
 from pathlib import Path
 from urllib.parse import urlparse
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_ORCH_BASE_URL = "http://localhost:8000"
@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     ORCH_RETRY_MAX_ELAPSED_SECONDS: int = 30
     GATEWAY_STREAM_IDLE_TIMEOUT_SECONDS: int = 60
     TOOL_CALL_TIMEOUT_SECONDS: int = 30
+    TOOL_CONTEXT_MAX_BYTES: int = Field(default=12 * 1024, ge=1024, le=12 * 1024)
+    TOOL_CONTEXT_RUN_MAX_BYTES: int = Field(default=48 * 1024, ge=1024, le=48 * 1024)
+    TOOL_GATEWAY_MAX_RESPONSE_BYTES: int = Field(
+        default=5 * 1024 * 1024,
+        ge=4 * 1024 * 1024 + 128 * 1024,
+        le=6 * 1024 * 1024,
+    )
     TOOL_APPROVAL_TIMEOUT_SECONDS: int = 300
     AGENT_MAX_SKILL_LOADS_PER_RUN: int = 3
     AGENT_MAX_LOADED_SKILL_BYTES_PER_RUN: int = 262144
@@ -76,6 +83,8 @@ class Settings(BaseSettings):
         """Reject development defaults when production mode is enabled."""
         if self.INTERNAL_TRANSPORT_TLS_ENABLED:
             self._validate_internal_transport_tls()
+        if self.TOOL_CONTEXT_RUN_MAX_BYTES < self.TOOL_CONTEXT_MAX_BYTES:
+            raise ValueError("TOOL_CONTEXT_RUN_MAX_BYTES must be at least TOOL_CONTEXT_MAX_BYTES")
 
         if not self.is_production:
             return self

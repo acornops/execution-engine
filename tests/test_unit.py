@@ -15,6 +15,7 @@ import execution_engine.agent.react_engine as react_engine_module
 import execution_engine.app as app_module
 import execution_engine.worker as worker_module
 from execution_engine.agent.react_engine import ReActAgentEngine
+from execution_engine.agent.tool_context import set_tool_evidence_message
 from execution_engine.agent.tools import GatewayToolClient
 from execution_engine.app import app
 from execution_engine.approval_summary import build_approval_summary
@@ -280,6 +281,18 @@ def test_production_config_rejects_default_tokens_and_redis():
     assert settings_obj.durability_redis_url == "redis://redis:6379/1"
 
 
+def test_tool_evidence_budgets_are_hard_platform_maxima():
+    with pytest.raises(ValueError):
+        Settings(TOOL_CONTEXT_MAX_BYTES=12 * 1024 + 1)
+    with pytest.raises(ValueError):
+        Settings(TOOL_CONTEXT_RUN_MAX_BYTES=48 * 1024 + 1)
+    with pytest.raises(ValueError, match="must be at least"):
+        Settings(TOOL_CONTEXT_MAX_BYTES=4096, TOOL_CONTEXT_RUN_MAX_BYTES=2048)
+    assert Settings().TOOL_GATEWAY_MAX_RESPONSE_BYTES == 5 * 1024 * 1024
+    with pytest.raises(ValueError):
+        Settings(TOOL_GATEWAY_MAX_RESPONSE_BYTES=4 * 1024 * 1024)
+
+
 def test_target_insights_context_event_payload_contains_retrieved_snippet_metadata():
     empty_context = ContextPackage(messages=[Message(role="user", content="Diagnose registry 401.")])
     assert build_target_insights_context_event_payload(empty_context) is None
@@ -417,6 +430,113 @@ def test_worker_sanitizes_untrusted_tool_specs_before_llm_use():
             },
         },
     }
+
+
+def test_worker_keeps_deep_tool_schemas_valid_without_injecting_none():
+    sanitized = sanitize_tool_spec_for_llm(
+        {
+            "name": "patch_resource",
+            "description": "Apply structured changes.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "changes": {
+                        "type": "array",
+                        "items": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "required": [
+                                        "type",
+                                        "container_type",
+                                        "container",
+                                        "expected_image",
+                                        "image",
+                                    ],
+                                    "properties": {
+                                        "type": {"const": "set_image"},
+                                        "container_type": {
+                                            "type": "string",
+                                            "enum": ["container", "init_container"],
+                                        },
+                                        "container": {"type": "string"},
+                                        "expected_image": {"type": "string"},
+                                        "image": {"type": "string"},
+                                    },
+                                    "additionalProperties": False,
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "scope": {
+                                            "type": "string",
+                                            "enum": ["resource", "pod_template"],
+                                        },
+                                        "expected_value": {
+                                            "anyOf": [{"type": "string"}, {"type": "null"}]
+                                        },
+                                    },
+                                    "additionalProperties": False,
+                                }
+                            ]
+                        },
+                    }
+                },
+            },
+        }
+    )
+
+    assert sanitized is not None
+    schema = sanitized["input_schema"]
+    image_operation = schema["properties"]["changes"]["items"]["oneOf"][0]
+    assert image_operation["required"] == [
+        "type",
+        "container_type",
+        "container",
+        "expected_image",
+        "image",
+    ]
+    assert image_operation["properties"]["type"]["const"] == "set_image"
+    assert image_operation["properties"]["expected_image"]["type"] == "string"
+    assert image_operation["properties"]["image"]["type"] == "string"
+    operation = schema["properties"]["changes"]["items"]["oneOf"][1]
+    assert operation["properties"]["scope"]["enum"] == ["resource", "pod_template"]
+    assert operation["properties"]["expected_value"]["anyOf"] == [
+        {"type": "string"}, {"type": "null"}
+    ]
+    assert operation["additionalProperties"] is False
+
+    def contains_none(value):
+        if value is None:
+            return True
+        if isinstance(value, dict):
+            return any(contains_none(item) for item in value.values())
+        if isinstance(value, list):
+            return any(contains_none(item) for item in value)
+        return False
+
+    assert contains_none(schema) is False
+
+
+def test_worker_preserves_intentional_null_literals_and_omits_unsupported_values():
+    sanitized = sanitize_tool_spec_for_llm(
+        {
+            "name": "nullable_tool",
+            "description": "Accept a nullable literal.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "nullable_literal": {"const": None},
+                    "unsupported": object(),
+                },
+            },
+        }
+    )
+
+    assert sanitized is not None
+    properties = sanitized["input_schema"]["properties"]
+    assert properties["nullable_literal"]["const"] is None
+    assert "unsupported" not in properties
 
 
 @pytest.mark.asyncio
@@ -1553,7 +1673,20 @@ class BlockingSummaryLlmClient:
 
 class FakeToolClient:
     def __init__(self, result: dict[str, object] | None = None):
-        self.result = result or {"result": {"status": "ok"}, "is_error": False}
+        self.result = result or {
+            "full_result": {"status": "ok"},
+            "model_context": {"status": "ok"},
+            "context_meta": {
+                "schema_version": "v1",
+                "strategy": "test",
+                "original_bytes": 1,
+                "context_bytes": 1,
+                "truncated": False,
+                "omissions": [],
+            },
+            "artifact_eligible": False,
+            "is_error": False,
+        }
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     async def call_tool(
@@ -1948,17 +2081,26 @@ async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
 async def test_gateway_tool_client_sends_targetless_workspace_workflow_tool_call():
     captured_payloads: list[dict[str, object]] = []
 
-    class CaptureClient:
-        async def post(self, url: str, json: dict[str, object]):
-            captured_payloads.append({"url": url, "json": json})
-            return httpx.Response(
-                200,
-                json={"result": {"tools": ["mcp.tools.list"]}, "is_error": False},
-                request=httpx.Request("POST", url),
-            )
-
-        async def aclose(self) -> None:
-            pass
+    async def capture_post(url: str, payload: dict[str, object]):
+        captured_payloads.append({"url": url, "json": payload})
+        return httpx.Response(
+            200,
+            json={
+                "full_result": {"tools": ["mcp.tools.list"]},
+                "model_context": {"tools": ["mcp.tools.list"]},
+                "context_meta": {
+                    "schema_version": "v1",
+                    "strategy": "mcp_content",
+                    "original_bytes": 32,
+                    "context_bytes": 32,
+                    "truncated": False,
+                    "omissions": [],
+                },
+                "artifact_eligible": False,
+                "is_error": False,
+            },
+            request=httpx.Request("POST", url),
+        )
 
     tool_client = GatewayToolClient(
         url="http://gateway.test",
@@ -1977,12 +2119,15 @@ async def test_gateway_tool_client_sends_targetless_workspace_workflow_tool_call
         agent_version=4,
         trigger_id="trigger-manual-1",
     )
-    await tool_client.close()
-    tool_client._client = CaptureClient()
+    tool_client._post_bounded = capture_post
+    try:
+        result = await tool_client.call_tool("mcp.tools.list", {"server": "acornops"}, call_id="call-1")
+    finally:
+        await tool_client.close()
 
-    result = await tool_client.call_tool("mcp.tools.list", {"server": "acornops"}, call_id="call-1")
-
-    assert result == {"result": {"tools": ["mcp.tools.list"]}, "is_error": False}
+    assert result["full_result"] == {"tools": ["mcp.tools.list"]}
+    assert result["model_context"] == {"tools": ["mcp.tools.list"]}
+    assert result["is_error"] is False
     payload = captured_payloads[0]["json"]
     assert payload["scope"] == {"type": "workspace"}
     assert payload["target_id"] is None
@@ -1994,6 +2139,51 @@ async def test_gateway_tool_client_sends_targetless_workspace_workflow_tool_call
     assert payload["agent_id"] == "agent-cluster-triage"
     assert payload["agent_version"] == 4
     assert payload["trigger_id"] == "trigger-manual-1"
+
+
+@pytest.mark.asyncio
+async def test_gateway_tool_client_preserves_structured_argument_validation_error():
+    async def reject_post(url: str, _payload: dict[str, object]):
+        return httpx.Response(
+            400,
+            json={
+                "detail": {
+                    "code": "TOOL_ARGS_INVALID",
+                    "message": "Invalid arguments for tool patch_resource: 'image' is a required property",
+                }
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    tool_client = GatewayToolClient(
+        url="http://gateway.test",
+        token="run-jwt",
+        workspace_id=EXAMPLE_WORKSPACE_ID,
+        target_id=EXAMPLE_TARGET_ID,
+        target_type="kubernetes",
+        run_id="run-1",
+        allowed_tools=["patch_resource"],
+    )
+    tool_client._post_bounded = reject_post
+    try:
+        result = await tool_client.call_tool(
+            "patch_resource",
+            {"kind": "Deployment", "name": "acornops-demo-unhealthy"},
+            call_id="patch-1",
+        )
+    finally:
+        await tool_client.close()
+
+    assert result["full_result"] == {
+            "code": "TOOL_ARGS_INVALID",
+            "message": (
+                "Tool gateway rejected the call: Invalid arguments for tool patch_resource: "
+                "'image' is a required property"
+            ),
+    }
+    assert result["model_context"] == result["full_result"]
+    assert result["artifact_eligible"] is False
+    assert result["is_error"] is True
 
 
 @pytest.mark.asyncio
@@ -2187,7 +2377,20 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
             assert tool_name == "restart_workload"
             assert call_id == "call-1"
             assert arguments["namespace"] == "acornops-demo"
-            return {"result": {"success": True}, "is_error": False}
+            return {
+                "full_result": {"success": True, "completeDetails": "artifact-only"},
+                "model_context": {"success": True},
+                "context_meta": {
+                    "schema_version": "v1",
+                    "strategy": "test",
+                    "original_bytes": 1,
+                    "context_bytes": 1,
+                    "truncated": False,
+                    "omissions": [],
+                },
+                "artifact_eligible": False,
+                "is_error": False,
+            }
 
         async def close(self) -> None:
             pass
@@ -2198,6 +2401,8 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
 
         async def run(self, *_args, resume_tool_result=None, **_kwargs):
             assert resume_tool_result is not None
+            assert resume_tool_result["model_context"] == {"success": True}
+            assert resume_tool_result["context_meta"]["strategy"] == "test"
             yield {
                 "type": "tool_result",
                 "call_id": resume_tool_result["call_id"],
@@ -2242,7 +2447,29 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
         for event in resume_events
     )
     assert state.status == RunStatus.COMPLETED
+    client.mark_tool_approval_execution_finished.assert_awaited_once_with(
+        state.run_id,
+        approval.id,
+        {"success": True},
+        False,
+    )
     client.consume_run_continuation.assert_awaited_once_with(state.run_id)
+
+
+def test_write_result_outcome_unknown_requires_error_and_explicit_outcome():
+    assert worker_module.write_result_outcome_unknown({"outcome": "unknown"}, True)
+    assert worker_module.write_result_outcome_unknown(
+        {
+            "schemaVersion": "acornops.model-context.v1",
+            "data": {"code": "TOOL_TIMEOUT", "outcome": "unknown"},
+        },
+        True,
+    )
+    assert not worker_module.write_result_outcome_unknown({"outcome": "unknown"}, False)
+    assert not worker_module.write_result_outcome_unknown(
+        {"data": {"outcome": "unknown"}}, False
+    )
+    assert not worker_module.write_result_outcome_unknown({"code": "TOOL_TIMEOUT"}, True)
 
 
 @pytest.mark.asyncio
@@ -2512,9 +2739,85 @@ async def test_react_engine_limits_tool_budget_to_remaining_calls():
     assert llm_client.calls[1]["tools"] == [{"name": "list_pods"}, {"name": "get_pod_logs"}]
     follow_up_messages = llm_client.calls[1]["messages"]
     assert all(message["role"] != "tool" for message in follow_up_messages)
+    evidence_message = next(
+        message for message in follow_up_messages
+        if message["role"] == "user" and "Live tool results:" in message["content"]
+    )
+    assert "Tool: list_pods" in evidence_message["content"]
     assert follow_up_messages[-1]["role"] == "user"
-    assert "Live tool results:" in follow_up_messages[-1]["content"]
-    assert "Tool: list_pods" in follow_up_messages[-1]["content"]
+
+
+def test_tool_evidence_does_not_remove_user_text_with_internal_marker():
+    messages = [
+        {"role": "user", "content": "ACORNOPS_TOOL_EVIDENCE\nThis is user-authored text."},
+        {"role": "system", "content": "ACORNOPS_TOOL_EVIDENCE\nOld internal evidence."},
+    ]
+    set_tool_evidence_message(messages, [], 0)
+
+    assert {
+        "role": "user", "content": "ACORNOPS_TOOL_EVIDENCE\nThis is user-authored text."
+    } in messages
+    internal = [message for message in messages if message.get("_acornops_internal") == "tool_evidence"]
+    assert len(internal) == 1
+    assert internal[0]["role"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_react_engine_stops_after_unknown_write_outcome_without_approval():
+    arguments = {
+        "kind": "Deployment", "namespace": "demo", "name": "api", "expected_uid": "deployment-1",
+        "changes": [{
+            "type": "set_image", "container_type": "container", "container": "api",
+            "expected_image": "api:broken", "image": "api:v2",
+        }],
+    }
+    llm_client = FakeStreamingLlmClient(streams=[[
+        {"type": "tool_call", "call_id": "call-1", "tool": "patch_resource", "arguments": arguments},
+    ]])
+    tool_client = FakeToolClient({
+        "full_result": {"code": "TOOL_TIMEOUT", "message": "Timed out", "outcome": "unknown"},
+        "model_context": {"code": "TOOL_TIMEOUT", "message": "Timed out", "outcome": "unknown"},
+        "context_meta": {"schema_version": "v1", "strategy": "error", "omissions": []},
+        "artifact_eligible": False,
+        "is_error": True,
+    })
+    engine = ReActAgentEngine(
+        llm_client, tool_client, react_policy(max_steps=2, max_tool_calls=2),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1702"),
+        tool_capabilities={"patch_resource": "write"}, confirmation_required_for_write=False,
+    )
+
+    chunks = [chunk async for chunk in engine.run(
+        [Message(role="user", content="Patch the resource.")], llm_config(),
+        [{"name": "patch_resource"}], asyncio.Event(),
+        continuation_state={
+            "llm_messages": [{"role": "user", "content": "Patch the resource."}],
+            "evidence_ledger": [{
+                "tool": "get_resource", "is_error": False,
+                "context": {
+                    "status": "success",
+                    "data": {
+                        "resource": {"kind": "Pod", "namespace": "demo", "name": "api-broken", "uid": "pod-1"},
+                        "ownership": {
+                            "status": "resolved",
+                            "remediationTarget": {
+                                "kind": "Deployment", "namespace": "demo", "name": "api",
+                                "uid": "deployment-1",
+                            },
+                        },
+                        "remediationTarget": {
+                            "kind": "Deployment", "namespace": "demo", "name": "api", "uid": "deployment-1",
+                            "containers": [{"name": "api", "image": "api:broken"}], "initContainers": [],
+                        },
+                    }
+                },
+            }],
+        },
+    )]
+
+    assert [chunk["type"] for chunk in chunks][-2:] == ["tool_result", "error"]
+    assert chunks[-1]["code"] == "WRITE_TOOL_OUTCOME_UNKNOWN"
+    assert len(llm_client.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -2658,6 +2961,239 @@ async def test_react_engine_interrupts_before_confirmed_write_tool():
     assert interrupts[0]["summary"] == "Restart workload in namespace demo."
     assert interrupts[0]["continuation"]["pending_tool_call"]["call_id"] == "call-1"
     assert tool_client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_react_engine_rejects_malformed_write_before_approval_then_self_corrects():
+    invalid = {
+        "kind": "Deployment", "namespace": "demo", "name": "api", "expected_uid": "uid-1",
+        "changes": [{
+            "type": "set_image", "container": "api", "expected_image": "api:broken", "image": "api:v2",
+        }],
+    }
+    corrected = {
+        "kind": "Deployment", "namespace": "demo", "name": "api", "expected_uid": "uid-1",
+        "changes": [{
+            "type": "set_image", "container_type": "container", "container": "api",
+            "expected_image": "api:broken", "image": "api:v2",
+        }],
+    }
+    llm_client = FakeStreamingLlmClient(streams=[
+        [{
+            "type": "tool_call", "call_id": "inspect", "tool": "get_resource",
+            "arguments": {"kind": "Pod", "namespace": "demo", "name": "api-broken"},
+        }],
+        [{"type": "tool_call", "call_id": "bad-1", "tool": "patch_resource", "arguments": invalid}],
+        [{"type": "tool_call", "call_id": "bad-2", "tool": "patch_resource", "arguments": invalid}],
+        [{"type": "tool_call", "call_id": "bad-3", "tool": "patch_resource", "arguments": invalid}],
+        [{"type": "tool_call", "call_id": "good", "tool": "patch_resource", "arguments": corrected}],
+    ])
+    pod_context = {
+        "schemaVersion": "acornops.model-context.v1", "tool": "get_resource", "status": "success",
+        "summary": "Resolved Pod owner.",
+        "data": {
+            "resource": {"kind": "Pod", "namespace": "demo", "name": "api-broken", "uid": "pod-1"},
+            "ownership": {
+                "status": "resolved",
+                "remediationTarget": {
+                    "kind": "Deployment", "namespace": "demo", "name": "api", "uid": "uid-1",
+                },
+            },
+            "remediationTarget": {
+                "kind": "Deployment", "namespace": "demo", "name": "api", "uid": "uid-1",
+                "containers": [{"name": "api", "image": "api:broken"}], "initContainers": [],
+            },
+        },
+        "omissions": [],
+    }
+    tool_client = FakeToolClient({
+        "full_result": {"resource": {}}, "model_context": pod_context,
+        "context_meta": {
+            "schema_version": "v1", "strategy": "producer_projection",
+            "original_bytes": 1, "context_bytes": 1, "truncated": False, "omissions": [],
+        },
+        "artifact_eligible": True, "is_error": False,
+    })
+    engine = ReActAgentEngine(
+        llm_client, tool_client,
+        react_policy(max_steps=6, max_tool_calls=5, max_duplicate_tool_calls=2),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1701"),
+        tool_capabilities={"patch_resource": "write"}, confirmation_required_for_write=True,
+    )
+    schema = {
+        "type": "object", "required": ["namespace", "expected_uid", "changes"],
+        "properties": {
+            "namespace": {"type": "string"}, "expected_uid": {"type": "string"},
+            "changes": {"type": "array", "items": {"oneOf": [{
+                "type": "object", "required": ["type", "container_type", "image"],
+                "properties": {
+                    "type": {"const": "set_image"}, "container_type": {"type": "string"},
+                    "image": {"type": "string"},
+                },
+            }]}},
+        },
+    }
+
+    chunks = [chunk async for chunk in engine.run(
+        [Message(role="user", content="Repair the image.")], llm_config(),
+        [{"name": "get_resource"}, {"name": "patch_resource", "input_schema": schema}], asyncio.Event(),
+    )]
+
+    invalid_results = [
+        chunk for chunk in chunks
+        if chunk["type"] == "tool_result" and chunk["tool"] == "patch_resource"
+    ]
+    interrupts = [chunk for chunk in chunks if chunk["type"] == "approval_interrupt"]
+    assert len(invalid_results) == 3
+    assert all(result["result"]["data"]["code"] == "TOOL_ARGS_INVALID" for result in invalid_results)
+    assert invalid_results[0]["result"]["data"]["validationDetails"] == [
+        {"path": "$.changes[0].container_type", "message": "required field is missing"}
+    ]
+    assert len(interrupts) == 1
+    assert interrupts[0]["call_id"] == "good"
+    assert interrupts[0]["arguments"] == corrected
+
+
+@pytest.mark.asyncio
+async def test_react_engine_rejects_patch_without_resolved_pod_evidence_before_approval():
+    arguments = {
+        "kind": "Deployment", "namespace": "demo", "name": "api", "expected_uid": "deployment-1",
+        "changes": [{
+            "type": "set_image", "container_type": "container", "container": "api",
+            "expected_image": "api:broken", "image": "api:v2",
+        }],
+    }
+    engine = ReActAgentEngine(
+        FakeStreamingLlmClient([
+            [{
+                "type": "tool_call", "call_id": "guessed", "tool": "patch_resource", "arguments": arguments,
+            }],
+            [
+                {"type": "delta", "text": "I could not authorize the guessed target."},
+                {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 5, "tool_calls": 1}},
+            ],
+        ]),
+        FakeToolClient(),
+        react_policy(max_steps=2, max_tool_calls=1),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1702"),
+        tool_capabilities={"patch_resource": "write"},
+        confirmation_required_for_write=True,
+    )
+
+    chunks = [chunk async for chunk in engine.run(
+        [Message(role="user", content="Repair the image.")],
+        llm_config(),
+        [{"name": "patch_resource"}],
+        asyncio.Event(),
+    )]
+
+    result = next(chunk for chunk in chunks if chunk["type"] == "tool_result")
+    assert result["result"]["data"]["code"] == "REMEDIATION_TARGET_NOT_RESOLVED"
+    assert not any(chunk["type"] == "approval_interrupt" for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_react_engine_records_verified_image_patch_after_fresh_read(monkeypatch):
+    arguments = {
+        "kind": "Deployment", "namespace": "demo", "name": "api", "expected_uid": "deployment-1",
+        "changes": [{
+            "type": "set_image", "container_type": "container", "container": "api",
+            "expected_image": "api:broken", "image": "api:v2",
+        }],
+    }
+    pod_context = {
+        "schemaVersion": "acornops.model-context.v1", "tool": "get_resource", "status": "success",
+        "summary": "Resolved Pod owner.",
+        "data": {
+            "resource": {"kind": "Pod", "namespace": "demo", "name": "api-broken", "uid": "pod-1"},
+            "ownership": {
+                "status": "resolved",
+                "remediationTarget": {
+                    "kind": "Deployment", "namespace": "demo", "name": "api",
+                    "uid": "deployment-1",
+                },
+            },
+            "remediationTarget": {
+                "kind": "Deployment", "namespace": "demo", "name": "api", "uid": "deployment-1",
+                "containers": [{"name": "api", "image": "api:broken"}], "initContainers": [],
+            },
+        },
+        "omissions": [],
+    }
+    write_context = {
+        "schemaVersion": "acornops.model-context.v1", "tool": "patch_resource", "status": "success",
+        "summary": "Image patched.",
+        "data": {
+            "operationId": "operation-1",
+            "target": {"kind": "Deployment", "namespace": "demo", "name": "api", "uid": "deployment-1"},
+        },
+        "omissions": [],
+    }
+    verified_context = {
+        "schemaVersion": "acornops.model-context.v1", "tool": "get_resource", "status": "success",
+        "summary": "Deployment verified.",
+        "data": {
+            "resource": {"kind": "Deployment", "namespace": "demo", "name": "api", "uid": "deployment-1"},
+            "remediationTarget": {
+                "kind": "Deployment", "namespace": "demo", "name": "api", "uid": "deployment-1",
+                "containers": [{"name": "api", "image": "api:v2"}], "initContainers": [],
+            },
+        },
+        "omissions": [],
+    }
+
+    class SequentialToolClient:
+        def __init__(self):
+            self.contexts = [pod_context, write_context, verified_context]
+
+        async def call_tool(self, *_args, **_kwargs):
+            context = self.contexts.pop(0)
+            return {
+                "full_result": {}, "model_context": context,
+                "context_meta": {
+                    "schema_version": "v1", "strategy": "producer_projection",
+                    "original_bytes": 1, "context_bytes": 1, "truncated": False, "omissions": [],
+                },
+                "artifact_eligible": False, "is_error": False,
+            }
+
+    outcomes: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        react_engine_module,
+        "record_remediation_verification_outcomes",
+        lambda observed: outcomes.extend(observed),
+    )
+    streams = [
+        [{
+            "type": "tool_call", "call_id": "read-pod", "tool": "get_resource",
+            "arguments": {"kind": "Pod", "namespace": "demo", "name": "api-broken"},
+        }],
+        [{"type": "tool_call", "call_id": "patch", "tool": "patch_resource", "arguments": arguments}],
+        [{
+            "type": "tool_call", "call_id": "verify", "tool": "get_resource",
+            "arguments": {"kind": "Deployment", "namespace": "demo", "name": "api"},
+        }],
+        [
+            {"type": "delta", "text": "Image repair verified."},
+            {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 5, "tool_calls": 3}},
+        ],
+    ]
+    engine = ReActAgentEngine(
+        FakeStreamingLlmClient(streams), SequentialToolClient(),
+        react_policy(max_steps=5, max_tool_calls=3),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1703"),
+        tool_capabilities={"get_resource": "read", "patch_resource": "write"},
+    )
+
+    _ = [chunk async for chunk in engine.run(
+        [Message(role="user", content="Repair the image.")],
+        llm_config(),
+        [{"name": "get_resource"}, {"name": "patch_resource"}],
+        asyncio.Event(),
+    )]
+
+    assert outcomes == [("patch_resource", "verified")]
 
 
 def test_approval_summary_fallback_handles_unknown_tools_and_missing_name():
