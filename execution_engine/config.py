@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     INTERNAL_TRANSPORT_TLS_CERT_FILE: str | None = None
     INTERNAL_TRANSPORT_TLS_KEY_FILE: str | None = None
     INTERNAL_TRANSPORT_HEALTH_PORT: int | None = None
+    ADDITIONAL_CA_BUNDLE_FILE: str | None = None
 
     EVENT_BATCH_SIZE: int = 50
     EVENT_FLUSH_INTERVAL_MS: int = 100
@@ -83,6 +84,8 @@ class Settings(BaseSettings):
         """Reject development defaults when production mode is enabled."""
         if self.INTERNAL_TRANSPORT_TLS_ENABLED:
             self._validate_internal_transport_tls()
+        if self.ADDITIONAL_CA_BUNDLE_FILE:
+            self._validate_readable_file("ADDITIONAL_CA_BUNDLE_FILE", self.ADDITIONAL_CA_BUNDLE_FILE)
         if self.TOOL_CONTEXT_RUN_MAX_BYTES < self.TOOL_CONTEXT_MAX_BYTES:
             raise ValueError("TOOL_CONTEXT_RUN_MAX_BYTES must be at least TOOL_CONTEXT_MAX_BYTES")
 
@@ -100,6 +103,14 @@ class Settings(BaseSettings):
         if not self.EXECUTION_GATEWAY_BASE_URL:
             raise ValueError("EXECUTION_GATEWAY_BASE_URL must be explicitly set in production")
         return self
+
+    @staticmethod
+    def _validate_readable_file(field_name: str, value: str) -> None:
+        try:
+            with Path(value).open("rb"):
+                pass
+        except OSError as error:
+            raise ValueError(f"{field_name} must point to a readable file") from error
 
     def _validate_internal_transport_tls(self) -> None:
         """Reject incomplete internal TLS configuration before serving traffic."""

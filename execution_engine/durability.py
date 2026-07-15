@@ -10,6 +10,7 @@ from typing import Iterable, Protocol
 from redis import Redis
 
 from execution_engine.models import CommitRequest, Event
+from execution_engine.outbound_tls import redis_tls_kwargs
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 ACTIVE_STATUSES = {"queued", "running", "cancelling"}
@@ -136,7 +137,11 @@ class DurabilityStore:
         """Initialize a durability store backed by Redis-compatible commands."""
         self.redis_url = redis_url
         self.key_prefix = key_prefix.rstrip(":")
-        self.redis: RedisLike = client or Redis.from_url(redis_url, decode_responses=True)
+        self.redis: RedisLike = client or Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            **redis_tls_kwargs(redis_url),
+        )
 
     @property
     def _run_states_key(self) -> str:

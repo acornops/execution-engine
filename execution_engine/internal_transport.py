@@ -6,14 +6,25 @@ import ssl
 from typing import Any
 
 from execution_engine.config import settings
+from execution_engine.outbound_tls import (
+    additional_ca_httpx_ssl_context,
+    internal_httpx_ssl_context,
+)
 
 
 def httpx_tls_kwargs() -> dict[str, Any]:
     """Return httpx TLS kwargs for AcornOps internal service calls."""
     if not settings.INTERNAL_TRANSPORT_TLS_ENABLED:
-        return {}
+        return (
+            {"verify": additional_ca_httpx_ssl_context()}
+            if settings.ADDITIONAL_CA_BUNDLE_FILE
+            else {}
+        )
     kwargs: dict[str, Any] = {
-        "verify": settings.INTERNAL_TRANSPORT_TLS_CA_FILE,
+        "verify": internal_httpx_ssl_context(
+            settings.INTERNAL_TRANSPORT_TLS_CA_FILE,
+            settings.ADDITIONAL_CA_BUNDLE_FILE,
+        ),
     }
     if settings.INTERNAL_TRANSPORT_TLS_REQUIRE_CLIENT_CERT:
         kwargs["cert"] = (

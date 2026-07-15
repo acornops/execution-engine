@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 from collections.abc import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import httpx
 import pytest
@@ -13,6 +13,7 @@ import pytest
 import execution_engine.agent.tools as tools_module
 import execution_engine.gateway_client as gateway_client_module
 import execution_engine.internal_transport as internal_transport_module
+import execution_engine.outbound_tls as outbound_tls_module
 import execution_engine.readiness as readiness_module
 import execution_engine.util.logging as logging_module
 import execution_engine.worker_fallbacks as worker_fallbacks_module
@@ -252,29 +253,65 @@ def test_internal_transport_httpx_kwargs_are_disabled_by_default(monkeypatch: py
     assert internal_transport_module.httpx_tls_kwargs() == {}
 
 
+def test_httpx_uses_additive_ca_context_when_internal_tls_is_disabled(monkeypatch: pytest.MonkeyPatch):
+    context = MagicMock()
+    monkeypatch.setattr(internal_transport_module.settings, "INTERNAL_TRANSPORT_TLS_ENABLED", False)
+    monkeypatch.setattr(internal_transport_module.settings, "ADDITIONAL_CA_BUNDLE_FILE", "/trust/additional-ca.pem")
+    monkeypatch.setattr(outbound_tls_module.httpx, "create_ssl_context", lambda: context)
+
+    assert internal_transport_module.httpx_tls_kwargs() == {"verify": context}
+    context.load_verify_locations.assert_called_once_with(cafile="/trust/additional-ca.pem")
+
+
+def test_redis_ca_is_applied_only_to_rediss(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(outbound_tls_module.settings, "ADDITIONAL_CA_BUNDLE_FILE", "/trust/additional-ca.pem")
+
+    assert outbound_tls_module.redis_tls_kwargs("redis://redis:6379/0") == {}
+    assert outbound_tls_module.redis_tls_kwargs("rediss://redis.example:6379/0") == {
+        "ssl_ca_certs": "/trust/additional-ca.pem",
+        "ssl_cert_reqs": "required",
+        "ssl_check_hostname": True,
+    }
+
+
 def test_internal_transport_httpx_kwargs_include_ca_and_client_cert(monkeypatch: pytest.MonkeyPatch):
+    context = MagicMock()
+    context_factory = MagicMock(return_value=context)
     monkeypatch.setattr(internal_transport_module.settings, "INTERNAL_TRANSPORT_TLS_ENABLED", True)
     monkeypatch.setattr(internal_transport_module.settings, "INTERNAL_TRANSPORT_TLS_REQUIRE_CLIENT_CERT", True)
     monkeypatch.setattr(internal_transport_module.settings, "INTERNAL_TRANSPORT_TLS_CA_FILE", "/tls/ca.crt")
     monkeypatch.setattr(internal_transport_module.settings, "INTERNAL_TRANSPORT_TLS_CERT_FILE", "/tls/client.crt")
     monkeypatch.setattr(internal_transport_module.settings, "INTERNAL_TRANSPORT_TLS_KEY_FILE", "/tls/client.key")
+    monkeypatch.setattr(internal_transport_module.settings, "ADDITIONAL_CA_BUNDLE_FILE", "/trust/additional-ca.pem")
+    monkeypatch.setattr(outbound_tls_module.ssl, "SSLContext", context_factory)
 
     assert internal_transport_module.httpx_tls_kwargs() == {
-        "verify": "/tls/ca.crt",
+        "verify": context,
         "cert": ("/tls/client.crt", "/tls/client.key"),
     }
+    assert context.load_verify_locations.call_args_list == [
+        call(cafile="/tls/ca.crt"),
+        call(cafile="/trust/additional-ca.pem"),
+    ]
+    context_factory.assert_called_once_with(outbound_tls_module.ssl.PROTOCOL_TLS_CLIENT)
 
 
 def test_internal_transport_httpx_kwargs_omit_client_cert_when_not_required(monkeypatch: pytest.MonkeyPatch):
+    context = MagicMock()
+    context_factory = MagicMock(return_value=context)
     monkeypatch.setattr(internal_transport_module.settings, "INTERNAL_TRANSPORT_TLS_ENABLED", True)
     monkeypatch.setattr(internal_transport_module.settings, "INTERNAL_TRANSPORT_TLS_REQUIRE_CLIENT_CERT", False)
     monkeypatch.setattr(internal_transport_module.settings, "INTERNAL_TRANSPORT_TLS_CA_FILE", "/tls/ca.crt")
     monkeypatch.setattr(internal_transport_module.settings, "INTERNAL_TRANSPORT_TLS_CERT_FILE", "/tls/client.crt")
     monkeypatch.setattr(internal_transport_module.settings, "INTERNAL_TRANSPORT_TLS_KEY_FILE", "/tls/client.key")
+    monkeypatch.setattr(internal_transport_module.settings, "ADDITIONAL_CA_BUNDLE_FILE", None)
+    monkeypatch.setattr(outbound_tls_module.ssl, "SSLContext", context_factory)
 
     assert internal_transport_module.httpx_tls_kwargs() == {
-        "verify": "/tls/ca.crt",
+        "verify": context,
     }
+    context.load_verify_locations.assert_called_once_with(cafile="/tls/ca.crt")
+    context_factory.assert_called_once_with(outbound_tls_module.ssl.PROTOCOL_TLS_CLIENT)
 
 
 @pytest.mark.asyncio

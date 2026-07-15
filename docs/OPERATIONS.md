@@ -15,6 +15,12 @@
 - `REDIS_URL`
 - `EXECUTION_GATEWAY_BASE_URL`
 
+## Additional CA Trust
+
+Set `ADDITIONAL_CA_BUNDLE_FILE` to a readable PEM bundle to extend system trust
+for outbound HTTPS and `rediss://` connections. The bundle does not enable TLS
+for plaintext URLs and does not replace the separate internal mTLS identity.
+
 Optional tuning:
 
 - `READINESS_CHECK_TIMEOUT_MS`

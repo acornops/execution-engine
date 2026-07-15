@@ -382,6 +382,16 @@ def test_internal_transport_tls_settings_fail_closed(tmp_path: Path):
     assert settings_obj.INTERNAL_TRANSPORT_TLS_ENABLED is True
 
 
+def test_additional_ca_bundle_must_be_readable(tmp_path: Path):
+    with pytest.raises(ValueError, match="ADDITIONAL_CA_BUNDLE_FILE"):
+        Settings(ADDITIONAL_CA_BUNDLE_FILE=str(tmp_path / "missing.pem"))
+
+    ca_file = tmp_path / "additional-ca.pem"
+    ca_file.write_text("test", encoding="utf-8")
+    settings_obj = Settings(ADDITIONAL_CA_BUNDLE_FILE=str(ca_file))
+    assert settings_obj.ADDITIONAL_CA_BUNDLE_FILE == str(ca_file)
+
+
 def test_internal_transport_tls_requires_ca_even_when_client_cert_not_required(tmp_path: Path):
     cert_file = tmp_path / "tls.crt"
     key_file = tmp_path / "tls.key"
