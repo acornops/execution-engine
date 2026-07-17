@@ -6,7 +6,10 @@ Use this file as a map, not as the full source of truth. The repository knowledg
 
 This repository supports human and agent-assisted development. When using a coding agent directly inside this repo, start from this repository root and read this file before editing files.
 
-For work that touches multiple AcornOps repositories, start the agent from the `acornops-workspace` root instead. The workspace root contains the cross-repo manifest, shared skills, validation helpers, and PR coordination workflow.
+For work that touches multiple AcornOps repositories, start the agent from the
+AcornOps workspace root instead. The workspace root is cloned from the
+`acornops` repository and contains the cross-repo manifest, shared skills,
+validation helpers, and PR coordination workflow.
 
 ## Start Here
 
@@ -40,7 +43,7 @@ For work that touches multiple AcornOps repositories, start the agent from the `
 - If work spans multiple steps or design decisions, create an execution plan in `docs/exec-plans/active/`.
 - Shared skills live in `.agents/skills/shared`; repository-owned skills live in `.agents/skills/local`.
 - Agent tools may not auto-discover nested skills. When a task matches a skill description, open the relevant `SKILL.md` from `.agents/skills/shared` or `.agents/skills/local` before editing.
-- Do not edit `.agents/skills/shared` here; update shared skills in the parent `acornops-workspace` repo and sync them into this repo.
+- Do not edit `.agents/skills/shared` here; update shared skills in the parent `acornops` repository and sync them into this repo.
 - Follow [Agent Handoff](docs/AGENT_HANDOFF.md) before final response, commit, or pull request handoff.
 - Keep this harness vendor-neutral; do not add required vendor-specific instruction files.
 
