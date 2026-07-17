@@ -158,7 +158,7 @@ class GatewayConfig(BaseModel):
 class ReasoningConfig(BaseModel):
     """Provider reasoning summary configuration frozen for a run."""
     summary_mode: Literal["off", "auto", "concise", "detailed"] = "off"
-    effort: Literal["default", "low", "medium", "high"] = "default"
+    effort: Literal["off", "low", "medium", "high"] = "off"
 
 class LLMConfig(BaseModel):
     """LLM provider and model configuration."""

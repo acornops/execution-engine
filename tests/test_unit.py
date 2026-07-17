@@ -1454,6 +1454,24 @@ def test_execution_snapshot_accepts_unknown_write_unavailable_reason():
     assert snapshot.tools.write_unavailable_reason == "future_control_plane_reason"
 
 
+def test_execution_snapshot_accepts_reasoning_effort_off():
+    payload = execution_snapshot("91db95f3-e9c3-4a12-921b-b46b5d1f17d2").model_dump()
+    payload["llm"]["reasoning"] = {"summary_mode": "off", "effort": "off"}
+
+    snapshot = ExecutionSnapshot.model_validate(payload)
+
+    assert snapshot.llm.reasoning.effort == "off"
+
+
+def test_execution_snapshot_defaults_omitted_reasoning_effort_to_off():
+    payload = execution_snapshot("91db95f3-e9c3-4a12-921b-b46b5d1f17d3").model_dump()
+    payload["llm"].pop("reasoning")
+
+    snapshot = ExecutionSnapshot.model_validate(payload)
+
+    assert snapshot.llm.reasoning.effort == "off"
+
+
 class FakeReActAgentEngine:
     def __init__(self, *_args, **_kwargs):
         self._chunks = list(self.__class__.chunks)
