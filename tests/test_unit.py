@@ -3224,6 +3224,21 @@ async def test_react_engine_records_verified_image_patch_after_fresh_read(monkey
     assert outcomes == [("patch_resource", "verified")]
 
 
+def test_approval_summary_describes_agentv_service_restart_preconditions():
+    assert build_approval_summary(
+        "restart_service",
+        {
+            "unit": "nginx.service",
+            "reason": "Recover failed ingress",
+            "expected_active_state": "failed",
+            "expected_sub_state": "failed",
+        },
+    ) == (
+        "Restart systemd service nginx.service (expected failed/failed). "
+        "Reason: Recover failed ingress."
+    )
+
+
 def test_approval_summary_fallback_handles_unknown_tools_and_missing_name():
     assert build_approval_summary(
         "external.write_action",

@@ -77,6 +77,15 @@ def build_approval_summary(tool_name: str, arguments: Dict[str, Any]) -> str:
         target = _target_label(args, "workload")
         return _cap_summary(f"Restart {target}.")
 
+    if clean_tool_name == "restart_service":
+        unit = _clean_text(args.get("unit")) or "the selected systemd service"
+        active = _clean_text(args.get("expected_active_state"))
+        sub = _clean_text(args.get("expected_sub_state"))
+        reason = _clean_text(args.get("reason"))
+        expected = f" (expected {active}/{sub})" if active and sub else ""
+        rationale = f" Reason: {reason}." if reason else ""
+        return _cap_summary(f"Restart systemd service {unit}{expected}.{rationale}")
+
     if clean_tool_name == "scale_workload":
         target = _target_label(args, "workload")
         replicas = _clean_text(args.get("replicas"))
