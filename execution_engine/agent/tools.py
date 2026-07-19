@@ -137,6 +137,7 @@ class ToolClient(ABC):
         tool_name: str,
         arguments: Dict[str, Any],
         call_id: str | None = None,
+        approval_receipt: str | None = None,
     ) -> Dict[str, Any]:
         """
         Executes a tool call.
@@ -159,9 +160,149 @@ class ToolClientStub(ToolClient):
         tool_name: str,
         arguments: Dict[str, Any],
         call_id: str | None = None,
+        approval_receipt: str | None = None,
     ) -> Dict[str, Any]:
         """Always raises NotImplementedError as tools are disabled for this run."""
         raise NotImplementedError("MCP tool calls are disabled for this run.")
+
+
+class CoordinationToolClient(ToolClient):
+    """Intercept reserved Manager coordination functions before the MCP gateway."""
+
+    DELEGATE = "_acornops_delegate_specialist"
+    AWAIT = "_acornops_await_delegations"
+
+    def __init__(self, delegate: ToolClient, orchestrator: Any, run_id: str, allowed_tools: Iterable[str]):
+        self.delegate = delegate
+        self.orchestrator = orchestrator
+        self.run_id = run_id
+        self.allowed_tools = set(allowed_tools)
+
+    async def close(self) -> None:
+        if hasattr(self.delegate, "close"):
+            await self.delegate.close()
+
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        call_id: str | None = None,
+        approval_receipt: str | None = None,
+    ) -> Dict[str, Any]:
+        if tool_name not in {self.DELEGATE, self.AWAIT}:
+            return await self.delegate.call_tool(
+                tool_name, arguments, call_id=call_id, approval_receipt=approval_receipt
+            )
+        if tool_name not in self.allowed_tools:
+            return _error_result({
+                "code": "COORDINATION_NOT_ALLOWED",
+                "message": "Coordination is not enabled for this run.",
+            })
+        try:
+            if tool_name == self.DELEGATE:
+                value = await self.orchestrator.create_delegation(self.run_id, arguments)
+            else:
+                value = await self.orchestrator.list_delegations(self.run_id)
+            return {
+                "full_result": value,
+                "model_context": value,
+                "context_meta": {
+                    "schema_version": "v1",
+                    "strategy": "full",
+                    "original_bytes": json_bytes(value),
+                    "context_bytes": json_bytes(value),
+                    "truncated": False,
+                    "omissions": [],
+                },
+                "artifact_eligible": False,
+                "is_error": False,
+            }
+        except httpx.HTTPStatusError as exc:
+            code = "DELEGATION_REJECTED"
+            message = f"Control plane rejected coordination with HTTP {exc.response.status_code}."
+            try:
+                detail = exc.response.json().get("error", {})
+                if isinstance(detail, dict):
+                    if isinstance(detail.get("code"), str):
+                        code = detail["code"]
+                    if isinstance(detail.get("message"), str):
+                        message = detail["message"]
+            except ValueError:
+                pass
+            return _error_result({"code": code, "message": message, "retryable": False})
+
+
+class PlatformToolClient(ToolClient):
+    """Intercept control-plane-owned function tools before the MCP gateway."""
+
+    def __init__(self, delegate: ToolClient, orchestrator: Any, run_id: str, function_mappings: Dict[str, str]):
+        self.delegate = delegate
+        self.orchestrator = orchestrator
+        self.run_id = run_id
+        self.function_mappings = dict(function_mappings)
+
+    async def close(self) -> None:
+        if hasattr(self.delegate, "close"):
+            await self.delegate.close()
+
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        call_id: str | None = None,
+        approval_receipt: str | None = None,
+    ) -> Dict[str, Any]:
+        canonical_tool_id = self.function_mappings.get(tool_name)
+        if canonical_tool_id is None:
+            return await self.delegate.call_tool(
+                tool_name, arguments, call_id=call_id, approval_receipt=approval_receipt
+            )
+        if not call_id:
+            return _error_result({
+                "code": "TOOL_CALL_ID_REQUIRED",
+                "message": "Platform-native tool calls require a stable tool-call ID.",
+            })
+        try:
+            value = await self.orchestrator.call_platform_native_tool(
+                self.run_id,
+                canonical_tool_id,
+                arguments,
+                call_id=call_id,
+            )
+            model_context = compact_tool_context(value)
+            is_error = bool(value.get("isError")) if isinstance(value, dict) else False
+            tool_calls_total.labels(result="error" if is_error else "success").inc()
+            return {
+                "full_result": value,
+                "model_context": model_context,
+                "context_meta": {
+                    "schema_version": "v1",
+                    "strategy": "generic_fallback",
+                    "original_bytes": json_bytes(value),
+                    "context_bytes": json_bytes(model_context),
+                    "truncated": model_context != value,
+                    "omissions": [],
+                },
+                "artifact_eligible": False,
+                "is_error": is_error,
+            }
+        except httpx.HTTPStatusError as exc:
+            tool_calls_total.labels(result="http_error").inc()
+            return _error_result(_gateway_http_error_result(exc, write_capable=False))
+        except httpx.TimeoutException:
+            tool_calls_total.labels(result="timeout").inc()
+            return _error_result({
+                "code": "TOOL_TIMEOUT",
+                "message": f"Platform function '{tool_name}' timed out.",
+                "retryable": True,
+            })
+        except httpx.RequestError:
+            tool_calls_total.labels(result="request_error").inc()
+            return _error_result({
+                "code": "TOOL_REQUEST_ERROR",
+                "message": "Platform-native tool request failed.",
+                "retryable": True,
+            })
 
 class GatewayToolClient(ToolClient):
     """
@@ -177,11 +318,11 @@ class GatewayToolClient(ToolClient):
         run_id: str,
         allowed_tools: Iterable[str],
         tool_capabilities: Dict[str, str] | None = None,
+        tool_refs: Dict[str, Dict[str, str]] | None = None,
         scope_type: str = "target",
         workflow_id: str | None = None,
         workflow_run_id: str | None = None,
         workflow_session_id: str | None = None,
-        workflow_step_id: str | None = None,
         agent_id: str | None = None,
         agent_version: int | None = None,
         trigger_id: str | None = None,
@@ -197,12 +338,16 @@ class GatewayToolClient(ToolClient):
         self.workflow_id = workflow_id
         self.workflow_run_id = workflow_run_id
         self.workflow_session_id = workflow_session_id
-        self.workflow_step_id = workflow_step_id
         self.agent_id = agent_id
         self.agent_version = agent_version
         self.trigger_id = trigger_id
         self.allowed_tools = set(allowed_tools)
         self.tool_capabilities = dict(tool_capabilities or {})
+        self.tool_refs = {
+            alias: {"server_id": str(ref["server_id"]), "tool_name": str(ref["tool_name"])}
+            for alias, ref in (tool_refs or {}).items()
+            if isinstance(ref, dict) and ref.get("server_id") and ref.get("tool_name")
+        }
         self.headers = {"Authorization": f"Bearer {self.token}"}
         self._client = httpx.AsyncClient(
             headers=self.headers,
@@ -238,6 +383,7 @@ class GatewayToolClient(ToolClient):
         tool_name: str,
         arguments: Dict[str, Any],
         call_id: str | None = None,
+        approval_receipt: str | None = None,
     ) -> Dict[str, Any]:
         """
         Calls the Tool Gateway to execute a tool.
@@ -260,12 +406,13 @@ class GatewayToolClient(ToolClient):
             workflow_id=self.workflow_id,
             workflow_run_id=self.workflow_run_id,
             workflow_session_id=self.workflow_session_id,
-            workflow_step_id=self.workflow_step_id,
             agent_id=self.agent_id,
             agent_version=self.agent_version,
             trigger_id=self.trigger_id,
             tool_call_id=call_id,
+            approval_receipt=approval_receipt,
             tool=tool_name,
+            tool_ref=self.tool_refs.get(tool_name),
             arguments=arguments
         )
 
@@ -275,10 +422,15 @@ class GatewayToolClient(ToolClient):
             payload_json.pop("workflow_id", None)
             payload_json.pop("workflow_run_id", None)
             payload_json.pop("workflow_session_id", None)
-            payload_json.pop("workflow_step_id", None)
-            payload_json.pop("agent_id", None)
-            payload_json.pop("agent_version", None)
             payload_json.pop("trigger_id", None)
+            if self.agent_id is None:
+                payload_json.pop("agent_id", None)
+            if self.agent_version is None:
+                payload_json.pop("agent_version", None)
+        if payload_json.get("tool_ref") is None:
+            payload_json.pop("tool_ref", None)
+        if payload_json.get("approval_receipt") is None:
+            payload_json.pop("approval_receipt", None)
 
         try:
             response = await self._post_bounded(

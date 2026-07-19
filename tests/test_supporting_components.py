@@ -17,10 +17,15 @@ import execution_engine.outbound_tls as outbound_tls_module
 import execution_engine.readiness as readiness_module
 import execution_engine.util.logging as logging_module
 import execution_engine.worker_fallbacks as worker_fallbacks_module
-from execution_engine.agent.tools import GatewayToolClient, ToolClientStub
+from execution_engine.agent.tools import GatewayToolClient, PlatformToolClient, ToolClientStub
 from execution_engine.gateway_client import GatewayLlmClient
 from execution_engine.readiness import DependencyStatus
 from execution_engine.worker_tool_artifacts import persist_tool_result_artifact, tool_result_event_payload
+from execution_engine.worker_tool_authority import (
+    build_authorized_tool_routing,
+    platform_function_mappings,
+    provider_native_tools,
+)
 
 SUCCESS_STREAM_RESPONSE_DATA = (
     '{"type":"delta","text":"hello"}\n'
@@ -36,6 +41,56 @@ GATEWAY_POD_LIST_RESULT = {
     ],
 }
 LONG_LOG_REPEAT_COUNT = 200
+
+
+def test_tool_routing_requires_an_exact_authorized_reference():
+    tool_refs, allowed_tools = build_authorized_tool_routing(
+        ["server_a_records_list", "server_b_records_list", "unqualified"],
+        [{"server_id": "server-a", "tool_name": "records.list"}],
+        [
+            {"name": "server_a_records_list", "server_id": "server-a", "tool_name": "records.list"},
+            {"name": "server_b_records_list", "server_id": "server-b", "tool_name": "records.list"},
+            {"name": "unqualified", "tool_name": "records.list"},
+        ],
+    )
+
+    assert allowed_tools == ["server_a_records_list"]
+    assert tool_refs == {
+        "server_a_records_list": {"server_id": "server-a", "tool_name": "records.list"}
+    }
+
+
+def test_platform_functions_require_all_snapshot_authorities():
+    assert platform_function_mappings(
+        ["acornops_generate_pdf_report", "web_search"],
+        [
+            {"id": "reports.pdf.generate", "model_alias": "acornops_generate_pdf_report"},
+        ],
+        [
+            {"name": "acornops_generate_pdf_report", "input_schema": {"type": "object"}},
+            {"name": "web_search"},
+        ],
+    ) == {"acornops_generate_pdf_report": "reports.pdf.generate"}
+
+
+@pytest.mark.parametrize(
+    "platform_functions,allowed_tools,tool_specs",
+    [
+        ([{"id": "reports.pdf.generate", "model_alias": "reports.pdf.generate"}], ["reports.pdf.generate"], [{"name": "reports.pdf.generate"}]),
+        ([{"id": "reports.pdf.generate", "model_alias": "acornops_generate_pdf_report"}], [], [{"name": "acornops_generate_pdf_report"}]),
+        ([{"id": "reports.pdf.generate", "model_alias": "acornops_generate_pdf_report"}], ["acornops_generate_pdf_report"], []),
+        ([{"id": "reports.pdf.generate", "model_alias": "acornops_generate_pdf_report"}, {"id": "reports.pdf.generate", "model_alias": "another_alias"}], ["acornops_generate_pdf_report", "another_alias"], [{"name": "acornops_generate_pdf_report"}, {"name": "another_alias"}]),
+    ],
+)
+def test_platform_function_mappings_fail_closed(platform_functions, allowed_tools, tool_specs):
+    with pytest.raises(ValueError):
+        platform_function_mappings(allowed_tools, platform_functions, tool_specs)
+
+
+def test_provider_native_tools_reject_platform_functions():
+    assert provider_native_tools([{"id": "web_search", "config": {}}]) == [{"id": "web_search", "config": {}}]
+    with pytest.raises(ValueError, match="unsupported provider-native tool"):
+        provider_native_tools([{"id": "reports.pdf.generate"}])
 
 
 class StaticAsyncStream(httpx.AsyncByteStream):
@@ -55,6 +110,50 @@ class StaticAsyncStream(httpx.AsyncByteStream):
 async def test_tool_client_stub_raises_not_implemented():
     with pytest.raises(NotImplementedError, match="disabled"):
         await ToolClientStub().call_tool("demo", {})
+
+
+@pytest.mark.asyncio
+async def test_platform_tool_client_calls_control_plane_with_stable_call_id():
+    orchestrator = MagicMock()
+    orchestrator.call_platform_native_tool = AsyncMock(return_value={
+        "content": [{"type": "text", "text": "created"}],
+        "structuredContent": {
+            "reportId": "report-1",
+            "mediaType": "application/pdf",
+            "downloadUrl": "/api/v1/report-artifacts/report-1/download",
+        },
+        "isError": False,
+    })
+    client = PlatformToolClient(
+        ToolClientStub(), orchestrator, "run-1",
+        {"acornops_generate_pdf_report": "reports.pdf.generate"},
+    )
+
+    result = await client.call_tool(
+        "acornops_generate_pdf_report",
+        {"title": "Incident", "markdown": "Recovered"},
+        call_id="call-1",
+    )
+
+    orchestrator.call_platform_native_tool.assert_awaited_once_with(
+        "run-1",
+        "reports.pdf.generate",
+        {"title": "Incident", "markdown": "Recovered"},
+        call_id="call-1",
+    )
+    assert result["is_error"] is False
+    assert result["full_result"]["structuredContent"]["reportId"] == "report-1"
+
+
+@pytest.mark.asyncio
+async def test_platform_tool_client_requires_call_id():
+    client = PlatformToolClient(
+        ToolClientStub(), MagicMock(), "run-1",
+        {"acornops_generate_pdf_report": "reports.pdf.generate"},
+    )
+    result = await client.call_tool("acornops_generate_pdf_report", {})
+    assert result["is_error"] is True
+    assert result["full_result"]["code"] == "TOOL_CALL_ID_REQUIRED"
 
 
 @pytest.mark.asyncio
@@ -95,6 +194,10 @@ async def test_gateway_tool_client_posts_valid_request_and_returns_gateway_respo
             "target_type": "kubernetes",
             "tool_call_id": "call-1",
             "tool": "allowed_tool",
+            "tool_ref": {
+                "server_id": "server-1",
+                "tool_name": "records.list",
+            },
             "arguments": {"query": "value"},
         }
         return httpx.Response(200, json={
@@ -127,6 +230,12 @@ async def test_gateway_tool_client_posts_valid_request_and_returns_gateway_respo
         target_type="kubernetes",
         run_id="run-1",
         allowed_tools=["allowed_tool"],
+        tool_refs={
+            "allowed_tool": {
+                "server_id": "server-1",
+                "tool_name": "records.list",
+            }
+        },
     )
 
     try:

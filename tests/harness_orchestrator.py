@@ -27,7 +27,7 @@ received_commits = {}
 @app.post("/internal/v1/runs/{run_id}/bootstrap")
 async def bootstrap(run_id: str):
     return {
-        "contract_version": 1,
+        "contract_version": 2,
         "scope": {
             "workspace_id": EXAMPLE_WORKSPACE_ID,
             "target_id": EXAMPLE_TARGET_ID,

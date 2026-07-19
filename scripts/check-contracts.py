@@ -68,7 +68,7 @@ for heading in (
     expect_in(DOC, heading, "Contract doc heading")
 
 for field in (
-    "contract_version: int = 1",
+    "contract_version: Literal[2]",
     "run_id: str",
     "workspace_id: str",
     'scope_type: Literal["target", "workspace"] = "target"',

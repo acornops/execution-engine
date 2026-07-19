@@ -24,7 +24,7 @@ def utc_now() -> datetime:
 
 class RunRequest(BaseModel):
     """Request model for starting a new run."""
-    contract_version: int = 1
+    contract_version: Literal[2]
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
     scope_type: Literal["target", "workspace"] = "target"
@@ -33,9 +33,7 @@ class RunRequest(BaseModel):
     workflow_id: Optional[str] = None
     workflow_run_id: Optional[str] = None
     workflow_session_id: Optional[str] = None
-    workflow_step_id: Optional[str] = None
     workflow_execution_id: Optional[str] = None
-    step_index: Optional[int] = Field(default=None, ge=0)
     attempt_number: Optional[int] = Field(default=None, ge=1)
     agent_id: Optional[str] = None
     agent_version: Optional[int] = None
@@ -72,9 +70,10 @@ class RunRequest(BaseModel):
         return self
 
     model_config = {
+        "extra": "forbid",
         "json_schema_extra": {
             "example": {
-                "contract_version": 1,
+                "contract_version": 2,
                 "run_id": EXAMPLE_RUN_ID,
                 "workspace_id": EXAMPLE_WORKSPACE_ID,
                 "target_id": EXAMPLE_TARGET_ID,
@@ -97,9 +96,7 @@ class Scope(BaseModel):
     workflow_id: Optional[str] = None
     workflow_run_id: Optional[str] = None
     workflow_session_id: Optional[str] = None
-    workflow_step_id: Optional[str] = None
     workflow_execution_id: Optional[str] = None
-    step_index: Optional[int] = Field(default=None, ge=0)
     attempt_number: Optional[int] = Field(default=None, ge=1)
     idempotency_key: Optional[str] = None
     agent_id: Optional[str] = None
@@ -134,6 +131,8 @@ class Scope(BaseModel):
         if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
             raise ValueError("workflow target binding requires both target_id and target_type")
         return self
+
+    model_config = {"extra": "forbid"}
 
 class Policy(BaseModel):
     """Execution policy for a run."""
@@ -173,12 +172,19 @@ class ToolConfig(BaseModel):
     """Tool registry and gateway configuration."""
     tool_registry_version: str
     allowed_tools: List[str]
+    allowed_tool_refs: List[Dict[str, str]] = Field(default_factory=list)
     native_tools: List[Dict[str, Any]] = Field(default_factory=list)
+    platform_functions: List[Dict[str, str]] = Field(default_factory=list)
     tool_specs: List[Dict[str, Any]] = Field(default_factory=list)
     write_unavailable_reason: Optional[str] = None
     confirmation_required_for_write: bool = True
     approval_timeout_seconds: int = 300
     gateway: GatewayConfig
+
+class AssistantConfig(BaseModel):
+    """Target-adapter or Agent instructions pinned by the control plane."""
+    targetType: Optional[TargetType] = None
+    instructions: str
 
 class SkillFile(BaseModel):
     """A single markdown file within a target troubleshooting skill bundle."""
@@ -196,7 +202,7 @@ class SkillEntry(BaseModel):
 
 class SkillConfig(BaseModel):
     """Target troubleshooting skill bundles attached to a run snapshot."""
-    contract_version: int = 2
+    contract_version: Literal[2] = 2
     entries: List[SkillEntry] = Field(default_factory=list)
     load_endpoint: Optional[str] = None
 
@@ -214,12 +220,13 @@ class LoadedSkillSnapshot(BaseModel):
 
 class ExecutionSnapshot(BaseModel):
     """Authoritative snapshot of run configuration from the Orchestrator."""
-    contract_version: int
+    contract_version: Literal[2]
     scope: Scope
     policy: Policy
     context: ContextConfig
     llm: LLMConfig
     tools: ToolConfig
+    assistant: Optional[AssistantConfig] = None
     skills: Optional[SkillConfig] = None
     routing: Dict[str, Any]
     tracing: Dict[str, Any]
@@ -375,12 +382,13 @@ class ToolCallRequest(BaseModel):
     workflow_id: Optional[str] = None
     workflow_run_id: Optional[str] = None
     workflow_session_id: Optional[str] = None
-    workflow_step_id: Optional[str] = None
     agent_id: Optional[str] = None
     agent_version: Optional[int] = None
     trigger_id: Optional[str] = None
     tool_call_id: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    approval_receipt: Optional[str] = Field(default=None, min_length=1, max_length=8192)
     tool: str = Field(examples=["get_resource_logs"])
+    tool_ref: Optional[Dict[str, str]] = None
     arguments: Dict[str, Any]
 
     model_config = {
@@ -412,6 +420,7 @@ class ToolApprovalRequest(BaseModel):
     """Request to create a human approval interrupt for a write tool call."""
     toolCallId: str
     toolName: str
+    toolRef: Dict[str, str]
     summary: str | None = None
     arguments: Dict[str, Any] = {}
 
@@ -428,6 +437,8 @@ class ToolApproval(BaseModel):
     workflowStepId: Optional[str] = None
     toolCallId: str
     toolName: str
+    toolRef: Dict[str, str] | None = None
+    requestedToolAlias: str | None = None
     summary: str | None = None
     arguments: Dict[str, Any] = {}
     status: Literal["pending", "approved", "rejected", "expired"]
@@ -435,6 +446,10 @@ class ToolApproval(BaseModel):
     toolResult: Any | None = None
     toolResultIsError: bool | None = None
     expiresAt: str
+
+class ToolApprovalExecutionStarted(BaseModel):
+    approval: ToolApproval
+    approvalReceipt: str
 
 class RunContinuation(BaseModel):
     """Persisted ReAct loop state used to resume after a write approval."""

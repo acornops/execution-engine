@@ -10,13 +10,15 @@ import httpx
 import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 import execution_engine.agent.react_engine as react_engine_module
 import execution_engine.app as app_module
 import execution_engine.worker as worker_module
+import execution_engine.worker_tool_authority as worker_tool_authority_module
 from execution_engine.agent.react_engine import ReActAgentEngine
 from execution_engine.agent.tool_context import set_tool_evidence_message
-from execution_engine.agent.tools import GatewayToolClient
+from execution_engine.agent.tools import CoordinationToolClient, GatewayToolClient
 from execution_engine.app import app
 from execution_engine.approval_summary import build_approval_summary
 from execution_engine.config import Settings, settings
@@ -38,19 +40,26 @@ from execution_engine.models import (
     Message,
     Policy,
     RunContinuation,
+    RunRequest,
     Scope,
     TargetInsightsContext,
     TargetInsightsSnippet,
     Timing,
     ToolApproval,
+    ToolApprovalExecutionStarted,
     ToolConfig,
     Usage,
 )
 from execution_engine.orchestrator_client import EventManager, OrchestratorClient
 from execution_engine.readiness import DependencyStatus
 from execution_engine.run_registry import RunRegistry, RunStatus
-from execution_engine.worker_run_support import build_target_insights_context_event_payload, start_event_manager
+from execution_engine.worker_run_support import (
+    build_target_insights_context_event_payload,
+    start_event_manager,
+)
 from execution_engine.worker_tool_sanitizer import sanitize_tool_spec_for_llm
+
+EXAMPLE_SERVER_ID = "955a5e17-5424-48e1-99ab-fdf8415a3a30"
 
 
 def _raise_package_not_found(_name: str) -> str:
@@ -212,7 +221,6 @@ async def test_run_registry_persists_workspace_workflow_identity_for_idempotency
         workflow_id="workspace-tool-exposure-audit",
         workflow_run_id="workflow-run-1",
         workflow_session_id="workflow-session-1",
-        workflow_step_id="inventory-scope",
         agent_id="agent-cluster-triage",
         agent_version=4,
         trigger_id="trigger-manual-1",
@@ -227,7 +235,6 @@ async def test_run_registry_persists_workspace_workflow_identity_for_idempotency
     assert persisted.workflow_id == "workspace-tool-exposure-audit"
     assert persisted.workflow_run_id == "workflow-run-1"
     assert persisted.workflow_session_id == "workflow-session-1"
-    assert persisted.workflow_step_id == "inventory-scope"
 
     recovered_registry = RunRegistry(max_concurrent_runs=10, durability_store=store)
     recovered, recovered_created = await recovered_registry.get_or_create(
@@ -241,7 +248,6 @@ async def test_run_registry_persists_workspace_workflow_identity_for_idempotency
         workflow_id="workspace-tool-exposure-audit",
         workflow_run_id="workflow-run-1",
         workflow_session_id="workflow-session-1",
-        workflow_step_id="inventory-scope",
     )
 
     assert recovered_created is False
@@ -268,6 +274,7 @@ def test_production_config_rejects_default_tokens_and_redis():
             EXECUTION_ENGINE_DISPATCH_TOKEN="dispatch-token",
             ORCH_BASE_URL="http://control-plane:8000",
             EXECUTION_GATEWAY_BASE_URL="http://llm-gateway:8080",
+            REDIS_URL="redis://localhost:6379/1",
         )
 
     settings_obj = Settings(
@@ -650,6 +657,7 @@ async def test_orchestrator_client_sends_approval_summary():
             "r1",
             tool_call_id="call-1",
             tool_name="restart_workload",
+            tool_ref={"serverId": EXAMPLE_SERVER_ID, "toolName": "restart_workload"},
             arguments={"namespace": "demo", "name": "api", "kind": "Deployment"},
             summary="Restart Deployment demo/api.",
         )
@@ -690,6 +698,7 @@ async def test_orchestrator_client_omits_missing_approval_summary():
             "r1",
             tool_call_id="call-1",
             tool_name="restart_workload",
+            tool_ref={"serverId": EXAMPLE_SERVER_ID, "toolName": "restart_workload"},
             arguments={"namespace": "demo", "name": "api", "kind": "Deployment"},
         )
         assert approval.summary is None
@@ -733,6 +742,7 @@ async def test_orchestrator_client_accepts_targetless_workflow_approval():
             "r-workflow",
             tool_call_id="workflow-gate-1",
             tool_name="workflow.approval_gate",
+            tool_ref={"serverId": EXAMPLE_SERVER_ID, "toolName": "workflow.approval_gate"},
             arguments={"workflowId": "workspace-tool-exposure-audit"},
             summary="Operator approval before governed workspace execution.",
         )
@@ -1035,7 +1045,7 @@ async def test_run_registry_cleans_terminal_entries_after_ttl():
 
 def run_payload(run_id: str) -> dict[str, object]:
     return {
-        "contract_version": 1,
+        "contract_version": 2,
         "run_id": run_id,
         "workspace_id": EXAMPLE_WORKSPACE_ID,
         "target_id": EXAMPLE_TARGET_ID,
@@ -1044,6 +1054,51 @@ def run_payload(run_id: str) -> dict[str, object]:
         "message_id": EXAMPLE_MESSAGE_ID,
         "requested_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
+
+
+def test_run_request_rejects_v1_and_unknown_compatibility_fields():
+    payload = run_payload("91db95f3-e9c3-4a12-921b-b46b5d1f17ff")
+    payload["contract_version"] = 1
+    payload["workflow_step_id"] = "legacy-step"
+    with pytest.raises(ValidationError):
+        RunRequest.model_validate(payload)
+
+
+@pytest.mark.asyncio
+async def test_coordination_functions_never_dispatch_through_the_mcp_gateway():
+    gateway = MagicMock()
+    gateway.call_tool = AsyncMock(return_value={"full_result": {"gateway": True}})
+    orchestrator = MagicMock()
+    orchestrator.create_delegation = AsyncMock(return_value={"id": "delegation-1", "status": "queued"})
+    orchestrator.list_delegations = AsyncMock(return_value={"items": [{"id": "delegation-1"}]})
+    client = CoordinationToolClient(
+        gateway,
+        orchestrator,
+        "run-manager-1",
+        [CoordinationToolClient.DELEGATE, CoordinationToolClient.AWAIT],
+    )
+
+    delegated = await client.call_tool(CoordinationToolClient.DELEGATE, {
+        "capabilityId": "target.diagnostics.read",
+        "targetBinding": {"targetId": "target-1", "targetType": "kubernetes"},
+        "taskPrompt": "Inspect the target",
+        "required": True,
+    })
+    awaited = await client.call_tool(CoordinationToolClient.AWAIT, {})
+
+    assert delegated["full_result"]["id"] == "delegation-1"
+    assert awaited["full_result"]["items"][0]["id"] == "delegation-1"
+    orchestrator.create_delegation.assert_awaited_once()
+    orchestrator.list_delegations.assert_awaited_once_with("run-manager-1")
+    gateway.call_tool.assert_not_awaited()
+
+    await client.call_tool("target.inspect", {"targetId": "target-1"}, call_id="call-1")
+    gateway.call_tool.assert_awaited_once_with(
+        "target.inspect",
+        {"targetId": "target-1"},
+        call_id="call-1",
+        approval_receipt=None,
+    )
 
 
 def test_start_run_requires_dispatch_token(monkeypatch):
@@ -1409,8 +1464,10 @@ def test_start_run_returns_429_when_queue_is_full(monkeypatch):
 
 def execution_snapshot(run_id: str, *, allowed_tools: list[str] | None = None) -> ExecutionSnapshot:
     gateway = GatewayConfig(url="http://gateway.test", token="gateway-token", request_timeout_ms=1000)
+    qualified_tools = allowed_tools or []
+    server_id = "00000000-0000-4000-8000-000000000001"
     return ExecutionSnapshot(
-        contract_version=1,
+        contract_version=2,
         scope=Scope(
             workspace_id=EXAMPLE_WORKSPACE_ID,
             target_id=EXAMPLE_TARGET_ID,
@@ -1436,8 +1493,21 @@ def execution_snapshot(run_id: str, *, allowed_tools: list[str] | None = None) -
         ),
         tools=ToolConfig(
             tool_registry_version="test",
-            allowed_tools=allowed_tools or [],
-            tool_specs=[],
+            allowed_tools=qualified_tools,
+            allowed_tool_refs=[
+                {"server_id": server_id, "tool_name": name}
+                for name in qualified_tools
+            ],
+            tool_specs=[
+                {
+                    "name": name,
+                    "server_id": server_id,
+                    "tool_name": name,
+                    "capability": "write",
+                    "input_schema": {"type": "object"},
+                }
+                for name in qualified_tools
+            ],
             gateway=gateway,
         ),
         routing={},
@@ -1722,6 +1792,7 @@ class FakeToolClient:
         tool_name: str,
         arguments: dict[str, object],
         call_id: str | None = None,
+        approval_receipt: str | None = None,
     ) -> dict[str, object]:
         self.calls.append((tool_name, arguments))
         return self.result
@@ -2039,7 +2110,6 @@ async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
         workflow_id="workspace-tool-exposure-audit",
         workflow_run_id="workflow-run-1",
         workflow_session_id="workflow-session-1",
-        workflow_step_id="inventory-scope",
         agent_id="agent-cluster-triage",
         agent_version=4,
         trigger_id="trigger-manual-1",
@@ -2079,7 +2149,6 @@ async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
     assert llm_client.calls[0]["workflow_id"] == "workspace-tool-exposure-audit"
     assert llm_client.calls[0]["workflow_run_id"] == "workflow-run-1"
     assert llm_client.calls[0]["workflow_session_id"] == "workflow-session-1"
-    assert llm_client.calls[0]["workflow_step_id"] == "inventory-scope"
     assert llm_client.calls[0]["agent_id"] == "agent-cluster-triage"
     assert llm_client.calls[0]["agent_version"] == 4
     assert llm_client.calls[0]["trigger_id"] == "trigger-manual-1"
@@ -2142,7 +2211,6 @@ async def test_gateway_tool_client_sends_targetless_workspace_workflow_tool_call
         workflow_id="workspace-tool-exposure-audit",
         workflow_run_id="workflow-run-1",
         workflow_session_id="workflow-session-1",
-        workflow_step_id="inventory-scope",
         agent_id="agent-cluster-triage",
         agent_version=4,
         trigger_id="trigger-manual-1",
@@ -2163,10 +2231,90 @@ async def test_gateway_tool_client_sends_targetless_workspace_workflow_tool_call
     assert payload["workflow_id"] == "workspace-tool-exposure-audit"
     assert payload["workflow_run_id"] == "workflow-run-1"
     assert payload["workflow_session_id"] == "workflow-session-1"
-    assert payload["workflow_step_id"] == "inventory-scope"
     assert payload["agent_id"] == "agent-cluster-triage"
     assert payload["agent_version"] == 4
     assert payload["trigger_id"] == "trigger-manual-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("agent_id", "agent_version"),
+    [("agent-target-diagnostics", 1), (None, None)],
+)
+async def test_gateway_tool_client_serializes_only_bound_target_agent_identity(
+    agent_id: str | None,
+    agent_version: int | None,
+):
+    captured_payloads: list[dict[str, object]] = []
+
+    async def capture_post(url: str, payload: dict[str, object]):
+        captured_payloads.append({"url": url, "json": payload})
+        return httpx.Response(
+            200,
+            json={
+                "full_result": {"items": []},
+                "model_context": {"items": []},
+                "context_meta": {
+                    "schema_version": "v1",
+                    "strategy": "mcp_content",
+                    "original_bytes": 12,
+                    "context_bytes": 12,
+                    "truncated": False,
+                    "omissions": [],
+                },
+                "artifact_eligible": False,
+                "is_error": False,
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    tool_client = GatewayToolClient(
+        url="http://gateway.test",
+        token="run-jwt",
+        workspace_id=EXAMPLE_WORKSPACE_ID,
+        target_id=EXAMPLE_TARGET_ID,
+        target_type="kubernetes",
+        run_id="run-workflow-target-1",
+        allowed_tools=["list_resources"],
+        tool_refs={
+            "list_resources": {
+                "server_id": EXAMPLE_SERVER_ID,
+                "tool_name": "list_resources",
+            }
+        },
+        scope_type="target",
+        workflow_id="target-diagnostics",
+        workflow_run_id="workflow-run-target-1",
+        workflow_session_id="workflow-session-target-1",
+        agent_id=agent_id,
+        agent_version=agent_version,
+        trigger_id="trigger-manual-1",
+    )
+    tool_client._post_bounded = capture_post
+    try:
+        result = await tool_client.call_tool(
+            "list_resources",
+            {"kind": "Pod", "namespace": "default"},
+            call_id="call-1",
+        )
+    finally:
+        await tool_client.close()
+
+    assert result["is_error"] is False
+    payload = captured_payloads[0]["json"]
+    assert "scope" not in payload
+    assert payload["target_id"] == EXAMPLE_TARGET_ID
+    assert payload["target_type"] == "kubernetes"
+    if agent_id is None:
+        assert "agent_id" not in payload
+        assert "agent_version" not in payload
+    else:
+        assert payload["agent_id"] == agent_id
+        assert payload["agent_version"] == agent_version
+    assert "workflow_id" not in payload
+    assert "workflow_run_id" not in payload
+    assert "workflow_session_id" not in payload
+    assert "trigger_id" not in payload
 
 
 @pytest.mark.asyncio
@@ -2287,7 +2435,7 @@ async def test_worker_generates_tool_only_fallback_and_tracks_tool_calls(monkeyp
     client.commit = AsyncMock()
 
     monkeypatch.setattr(worker_module, "GatewayLlmClient", MagicMock())
-    monkeypatch.setattr(worker_module, "GatewayToolClient", MagicMock())
+    monkeypatch.setattr(worker_tool_authority_module, "GatewayToolClient", MagicMock())
     FakeReActAgentEngine.chunks = [
         {
             "type": "tool_call",
@@ -2350,7 +2498,6 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
     registry.persist_state(state)
 
     snapshot = execution_snapshot(state.run_id, allowed_tools=["restart_workload"])
-    snapshot.tools.tool_specs = [{"name": "restart_workload", "capability": "write"}]
     approval = ToolApproval(
         id="approval-1",
         runId=state.run_id,
@@ -2393,7 +2540,10 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
     client.bootstrap = AsyncMock(return_value=snapshot)
     client.get_run_continuation = AsyncMock(return_value=continuation)
     client.mark_tool_approval_execution_started = AsyncMock(
-        return_value=approval.model_copy(update={"executionStatus": "executing"})
+        return_value=ToolApprovalExecutionStarted(
+            approval=approval.model_copy(update={"executionStatus": "executing"}),
+            approvalReceipt="signed-receipt",
+        )
     )
     client.mark_tool_approval_execution_finished = AsyncMock(return_value=succeeded_approval)
     client.post_events = AsyncMock()
@@ -2401,9 +2551,16 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
     client.consume_run_continuation = AsyncMock()
 
     class CapturingToolClient:
-        async def call_tool(self, tool_name: str, arguments: dict[str, object], call_id: str | None = None):
+        async def call_tool(
+            self,
+            tool_name: str,
+            arguments: dict[str, object],
+            call_id: str | None = None,
+            approval_receipt: str | None = None,
+        ):
             assert tool_name == "restart_workload"
             assert call_id == "call-1"
+            assert approval_receipt == "signed-receipt"
             assert arguments["namespace"] == "acornops-demo"
             return {
                 "full_result": {"success": True, "completeDetails": "artifact-only"},
@@ -2429,8 +2586,7 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
 
         async def run(self, *_args, resume_tool_result=None, **_kwargs):
             assert resume_tool_result is not None
-            assert resume_tool_result["model_context"] == {"success": True}
-            assert resume_tool_result["context_meta"]["strategy"] == "test"
+            assert resume_tool_result["result"] == {"success": True}
             yield {
                 "type": "tool_result",
                 "call_id": resume_tool_result["call_id"],
@@ -2442,7 +2598,11 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
             yield {"type": "final", "usage": {"input_tokens": 10, "output_tokens": 3, "tool_calls": 1}}
 
     monkeypatch.setattr(worker_module, "GatewayLlmClient", MagicMock())
-    monkeypatch.setattr(worker_module, "GatewayToolClient", lambda **_kwargs: CapturingToolClient())
+    monkeypatch.setattr(
+        worker_tool_authority_module,
+        "GatewayToolClient",
+        lambda **_kwargs: CapturingToolClient(),
+    )
     monkeypatch.setattr(worker_module, "ReActAgentEngine", ResumeAwareEngine)
 
     worker = worker_module.Worker(registry, client)
@@ -2512,7 +2672,12 @@ async def test_worker_emits_approval_requested_summary(monkeypatch):
         EXAMPLE_MESSAGE_ID,
     )
     snapshot = execution_snapshot(state.run_id, allowed_tools=["restart_workload"])
-    snapshot.tools.tool_specs = [{"name": "restart_workload", "capability": "write"}]
+    snapshot.tools.tool_specs = [{
+        "name": "restart_workload",
+        "server_id": EXAMPLE_SERVER_ID,
+        "tool_name": "restart_workload",
+        "capability": "write",
+    }]
     snapshot.tools.confirmation_required_for_write = True
 
     approval = ToolApproval(
@@ -2539,7 +2704,7 @@ async def test_worker_emits_approval_requested_summary(monkeypatch):
     client.commit = AsyncMock()
 
     monkeypatch.setattr(worker_module, "GatewayLlmClient", MagicMock())
-    monkeypatch.setattr(worker_module, "GatewayToolClient", MagicMock())
+    monkeypatch.setattr(worker_tool_authority_module, "GatewayToolClient", MagicMock())
     FakeReActAgentEngine.chunks = [
         {
             "type": "approval_interrupt",
@@ -2576,7 +2741,12 @@ async def test_worker_omits_missing_approval_requested_summary(monkeypatch):
         EXAMPLE_MESSAGE_ID,
     )
     snapshot = execution_snapshot(state.run_id, allowed_tools=["restart_workload"])
-    snapshot.tools.tool_specs = [{"name": "restart_workload", "capability": "write"}]
+    snapshot.tools.tool_specs = [{
+        "name": "restart_workload",
+        "server_id": EXAMPLE_SERVER_ID,
+        "tool_name": "restart_workload",
+        "capability": "write",
+    }]
     snapshot.tools.confirmation_required_for_write = True
 
     approval = ToolApproval(
@@ -2602,7 +2772,7 @@ async def test_worker_omits_missing_approval_requested_summary(monkeypatch):
     client.commit = AsyncMock()
 
     monkeypatch.setattr(worker_module, "GatewayLlmClient", MagicMock())
-    monkeypatch.setattr(worker_module, "GatewayToolClient", MagicMock())
+    monkeypatch.setattr(worker_tool_authority_module, "GatewayToolClient", MagicMock())
     FakeReActAgentEngine.chunks = [
         {
             "type": "approval_interrupt",
@@ -2634,7 +2804,12 @@ async def test_worker_preserves_empty_approval_event_summary(monkeypatch):
         EXAMPLE_MESSAGE_ID,
     )
     snapshot = execution_snapshot(state.run_id, allowed_tools=["restart_workload"])
-    snapshot.tools.tool_specs = [{"name": "restart_workload", "capability": "write"}]
+    snapshot.tools.tool_specs = [{
+        "name": "restart_workload",
+        "server_id": EXAMPLE_SERVER_ID,
+        "tool_name": "restart_workload",
+        "capability": "write",
+    }]
     snapshot.tools.confirmation_required_for_write = True
 
     approval = ToolApproval(
@@ -2661,7 +2836,7 @@ async def test_worker_preserves_empty_approval_event_summary(monkeypatch):
     client.commit = AsyncMock()
 
     monkeypatch.setattr(worker_module, "GatewayLlmClient", MagicMock())
-    monkeypatch.setattr(worker_module, "GatewayToolClient", MagicMock())
+    monkeypatch.setattr(worker_tool_authority_module, "GatewayToolClient", MagicMock())
     FakeReActAgentEngine.chunks = [
         {
             "type": "approval_interrupt",

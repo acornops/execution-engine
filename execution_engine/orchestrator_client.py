@@ -20,6 +20,7 @@ from execution_engine.models import (
     LoadedSkillSnapshot,
     RunContinuation,
     ToolApproval,
+    ToolApprovalExecutionStarted,
     ToolApprovalRequest,
 )
 from execution_engine.util.logging import logger
@@ -149,13 +150,20 @@ class OrchestratorClient:
         *,
         tool_call_id: str,
         tool_name: str,
+        tool_ref: Dict[str, str],
         arguments: Dict[str, Any],
         summary: str | None = None,
         continuation: Dict[str, Any] | None = None,
     ) -> ToolApproval:
         """Creates or returns a pending approval interrupt for a write tool call."""
         url = f"{self.base_url}{INTERNAL_CONTROL_PLANE_PREFIX}/runs/{run_id}/approvals"
-        payload = ToolApprovalRequest(toolCallId=tool_call_id, toolName=tool_name, summary=summary, arguments=arguments)
+        payload = ToolApprovalRequest(
+            toolCallId=tool_call_id,
+            toolName=tool_name,
+            toolRef=tool_ref,
+            summary=summary,
+            arguments=arguments,
+        )
         body = payload.model_dump(exclude_none=True)
         if continuation is not None:
             body["continuation"] = continuation
@@ -193,13 +201,14 @@ class OrchestratorClient:
             orchestrator_requests_total.labels(endpoint="event_cursor", result="failure").inc()
             raise
 
-    @_retry("approval_execution_started")
-    async def mark_tool_approval_execution_started(self, run_id: str, approval_id: str) -> ToolApproval:
+    async def mark_tool_approval_execution_started(
+        self, run_id: str, approval_id: str
+    ) -> ToolApprovalExecutionStarted:
         """Mark a tool approval as execution-started in the orchestrator."""
         url = f"{self.base_url}{INTERNAL_CONTROL_PLANE_PREFIX}/runs/{run_id}/approvals/{approval_id}/execution-started"
         response = await self.client.post(url)
         response.raise_for_status()
-        return ToolApproval.model_validate(response.json())
+        return ToolApprovalExecutionStarted.model_validate(response.json())
 
     @_retry("tool_result_artifact")
     async def create_tool_result_artifact(
@@ -214,6 +223,35 @@ class OrchestratorClient:
         response.raise_for_status()
         payload = response.json()
         return dict(payload) if isinstance(payload, dict) else {}
+
+    @_retry("platform_native_tool")
+    async def call_platform_native_tool(
+        self,
+        run_id: str,
+        tool_id: str,
+        arguments: Dict[str, Any],
+        *,
+        call_id: str,
+    ) -> Dict[str, Any]:
+        """Execute one snapshot-authorized control-plane-native function tool."""
+        encoded_run_id = quote(run_id, safe="")
+        encoded_tool_id = quote(tool_id, safe="")
+        url = (
+            f"{self.base_url}{INTERNAL_CONTROL_PLANE_PREFIX}/runs/"
+            f"{encoded_run_id}/native-tools/{encoded_tool_id}/call"
+        )
+        try:
+            response = await self.client.post(
+                url,
+                json={"toolCallId": call_id, "arguments": arguments},
+            )
+            response.raise_for_status()
+            orchestrator_requests_total.labels(endpoint="platform_native_tool", result="success").inc()
+            value = response.json()
+            return dict(value) if isinstance(value, dict) else {"content": value}
+        except Exception:
+            orchestrator_requests_total.labels(endpoint="platform_native_tool", result="failure").inc()
+            raise
 
     @_retry("approval_execution_finished")
     async def mark_tool_approval_execution_finished(
@@ -234,6 +272,22 @@ class OrchestratorClient:
         url = f"{self.base_url}{INTERNAL_CONTROL_PLANE_PREFIX}/runs/{run_id}/continuation"
         response = await self.client.delete(url)
         response.raise_for_status()
+
+    async def create_delegation(self, run_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create one persisted, control-plane-selected specialist delegation."""
+        url = f"{self.base_url}{INTERNAL_CONTROL_PLANE_PREFIX}/runs/{quote(run_id, safe='')}/delegations"
+        response = await self.client.post(url, json=payload)
+        response.raise_for_status()
+        value = response.json()
+        return dict(value) if isinstance(value, dict) else {}
+
+    async def list_delegations(self, run_id: str) -> Dict[str, Any]:
+        """Read child outcomes without discarding successful sibling results."""
+        url = f"{self.base_url}{INTERNAL_CONTROL_PLANE_PREFIX}/runs/{quote(run_id, safe='')}/delegations"
+        response = await self.client.get(url)
+        response.raise_for_status()
+        value = response.json()
+        return dict(value) if isinstance(value, dict) else {"items": []}
 
     @_retry("commit")
     async def commit(self, run_id: str, commit_req: CommitRequest) -> None:

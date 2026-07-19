@@ -5,10 +5,9 @@ from datetime import UTC, datetime
 from typing import Any, Callable
 
 from execution_engine.agent.react_engine import ReActAgentEngine
-from execution_engine.agent.tools import GatewayToolClient, ToolClientStub
 from execution_engine.config import settings
 from execution_engine.gateway_client import GatewayLlmClient
-from execution_engine.models import CommitRequest, Timing, Usage
+from execution_engine.models import CommitRequest, Message, Timing, Usage
 from execution_engine.orchestrator_client import EventManager, OrchestratorClient
 from execution_engine.reasoning_summary_events import ReasoningSummaryEventForwarder
 from execution_engine.run_registry import RunRegistry, RunState, RunStatus
@@ -38,6 +37,7 @@ from execution_engine.worker_run_support import (
     write_result_outcome_unknown,
 )
 from execution_engine.worker_tool_artifacts import persist_tool_result_artifact, tool_result_event_payload
+from execution_engine.worker_tool_authority import build_runtime_tool_client, provider_native_tools
 from execution_engine.worker_tool_sanitizer import sanitize_tool_spec_for_llm
 
 
@@ -148,7 +148,6 @@ class Worker:
                     snapshot.scope.workflow_id == state.workflow_id
                     and snapshot.scope.workflow_run_id == state.workflow_run_id
                     and snapshot.scope.workflow_session_id == state.workflow_session_id
-                    and snapshot.scope.workflow_step_id == state.workflow_step_id
                     and snapshot.scope.target_id == state.target_id
                     and snapshot.scope.target_type == state.target_type
                 )
@@ -213,34 +212,10 @@ class Worker:
                 timeout_ms=snapshot.llm.gateway.request_timeout_ms or 60000
             )
 
-            tool_capabilities = {
-                str(spec.get("name")): "read" if spec.get("capability") == "read" else "write"
-                for spec in snapshot.tools.tool_specs
-                if isinstance(spec, dict) and spec.get("name")
-            }
-            if snapshot.tools.allowed_tools:
-                tool_client = GatewayToolClient(
-                    url=snapshot.tools.gateway.url,
-                    token=snapshot.tools.gateway.token,
-                    workspace_id=state.workspace_id,
-                    target_id=state.target_id,
-                    target_type=state.target_type,
-                    run_id=state.run_id,
-                    allowed_tools=snapshot.tools.allowed_tools,
-                    tool_capabilities=tool_capabilities,
-                    scope_type=state.scope_type,
-                    workflow_id=state.workflow_id,
-                    workflow_run_id=state.workflow_run_id,
-                    workflow_session_id=state.workflow_session_id,
-                    workflow_step_id=state.workflow_step_id,
-                    agent_id=snapshot.scope.agent_id,
-                    agent_version=snapshot.scope.agent_version,
-                    trigger_id=snapshot.scope.trigger_id,
-                )
-            else:
-                tool_client = ToolClientStub()
-
-            allowed_tool_names = set(snapshot.tools.allowed_tools)
+            tool_client, tool_capabilities, allowed_gateway_tools, allowed_tool_names = (
+                build_runtime_tool_client(snapshot, state, self.orchestrator_client)
+            )
+            llm_native_tools = provider_native_tools(snapshot.tools.native_tools)
             llm_tool_specs = [
                 sanitized_spec
                 for spec in snapshot.tools.tool_specs
@@ -248,6 +223,17 @@ class Worker:
                 for sanitized_spec in [sanitize_tool_spec_for_llm(spec)]
                 if sanitized_spec is not None
             ]
+            approval_tool_refs = {
+                str(spec.get("name")): {
+                    "serverId": str(spec.get("server_id")),
+                    "toolName": str(spec.get("tool_name")),
+                }
+                for spec in snapshot.tools.tool_specs
+                if isinstance(spec, dict)
+                and spec.get("name")
+                and spec.get("server_id")
+                and spec.get("tool_name")
+            }
             skill_loader_spec = build_skill_loader_tool_spec(snapshot.skills)
             if skill_loader_spec is not None:
                 sanitized_skill_loader_spec = sanitize_tool_spec_for_llm(skill_loader_spec)
@@ -269,7 +255,7 @@ class Worker:
                     pending_call_id,
                     pending_tool_name,
                     pending_arguments,
-                    snapshot.tools.allowed_tools,
+                    allowed_gateway_tools,
                     tool_capabilities,
                 )
                 if approval.status == "approved":
@@ -278,10 +264,11 @@ class Worker:
                             state.run_id,
                             approval.id,
                         )
+                        started_approval = started.approval
                         if state.cancel_event.is_set():
                             finish_cancelled_run()
                             return
-                        if started.executionStatus == "unknown":
+                        if started_approval.executionStatus == "unknown":
                             resume_tool_result = {
                                 "call_id": pending_call_id,
                                 "tool": pending_tool_name,
@@ -296,16 +283,16 @@ class Worker:
                                 "is_error": True,
                             }
                             unknown_write_outcome = True
-                        elif started.executionStatus in {"succeeded", "failed"}:
+                        elif started_approval.executionStatus in {"succeeded", "failed"}:
                             resume_tool_result = {
                                 "call_id": pending_call_id,
                                 "tool": pending_tool_name,
                                 "arguments": pending_arguments,
-                                "result": started.toolResult,
+                                "result": started_approval.toolResult,
                                 "is_error": bool(
-                                    started.toolResultIsError
-                                    if started.toolResultIsError is not None
-                                    else started.executionStatus == "failed"
+                                    started_approval.toolResultIsError
+                                    if started_approval.toolResultIsError is not None
+                                    else started_approval.executionStatus == "failed"
                                 ),
                             }
                         else:
@@ -318,6 +305,7 @@ class Worker:
                                 pending_tool_name,
                                 pending_arguments,
                                 call_id=pending_call_id,
+                                approval_receipt=started.approvalReceipt,
                             )
                             executed_tool_result = tool_result
                             if state.cancel_event.is_set():
@@ -395,6 +383,11 @@ class Worker:
                     return
 
             input_messages = context.messages if context else []
+            if snapshot.assistant and snapshot.assistant.instructions.strip():
+                input_messages = [
+                    Message(role="system", content=snapshot.assistant.instructions.strip()),
+                    *input_messages,
+                ]
             skill_names_by_ref = build_skill_names_by_ref(snapshot.skills)
             if snapshot.scope.type == "target":
                 input_messages = build_skill_catalog_messages(snapshot.skills) + input_messages
@@ -440,7 +433,7 @@ class Worker:
                         snapshot.llm,
                         llm_tool_specs,
                         state.cancel_event,
-                        native_tools=snapshot.tools.native_tools,
+                        native_tools=llm_native_tools,
                         continuation_state=continuation_state,
                         resume_tool_result=resume_tool_result,
                     ):
@@ -488,6 +481,7 @@ class Worker:
                                 state.run_id,
                                 tool_call_id=chunk["call_id"],
                                 tool_name=chunk["tool"],
+                                tool_ref=approval_tool_refs[chunk["tool"]],
                                 summary=chunk.get("summary"),
                                 arguments=chunk["arguments"],
                                 continuation=chunk["continuation"],

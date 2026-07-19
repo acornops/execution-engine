@@ -28,6 +28,12 @@ The execution engine owns run execution and talks only to the control plane and 
 
 - The control plane owns run, workspace, target, workflow, session, and message identifiers. Execution-engine echoes them; it does not mint replacements.
 - Tool permission, provider/model permission, native tool permission, write availability, and skill snapshots are upstream policy. The engine treats bootstrap snapshots and run JWTs as authoritative.
+- Platform functions are callable only when their provider-safe `model_alias`
+  intersects `platform_functions`, `allowed_tools`, and `tool_specs`. The engine
+  maps the alias back to the canonical control-plane ID and sends the original
+  model call ID; missing, duplicate, and invalid mappings fail closed.
+  Provider-native `web_search` remains the only declaration sent through
+  `native_tools`, while target and MCP tools retain their existing route.
 - Execution-engine never calls target agents, management-console, or external MCP servers directly.
 - Cancellation is terminal from the engine's point of view; after cancellation wins, user-visible assistant output stops.
 - Approval continuations must not store gateway tokens or credentials. Resume reboots policy through control-plane bootstrap.

@@ -28,7 +28,7 @@ DISPATCH_HEADERS = {"Authorization": f"Bearer {DISPATCH_TOKEN}"}
 async def test_happy_path():
     run_id = EXAMPLE_HAPPY_RUN_ID
     payload = {
-        "contract_version": 1,
+        "contract_version": 2,
         "run_id": run_id,
         "workspace_id": EXAMPLE_WORKSPACE_ID,
         "target_id": EXAMPLE_TARGET_ID,
@@ -70,7 +70,7 @@ async def test_happy_path():
 async def test_idempotency():
     run_id = EXAMPLE_IDEMPOTENCY_RUN_ID
     payload = {
-        "contract_version": 1,
+        "contract_version": 2,
         "run_id": run_id,
         "workspace_id": EXAMPLE_WORKSPACE_ID,
         "target_id": EXAMPLE_TARGET_ID,
@@ -100,7 +100,7 @@ async def test_idempotency():
 async def test_cancellation():
     run_id = EXAMPLE_CANCEL_RUN_ID
     payload = {
-        "contract_version": 1,
+        "contract_version": 2,
         "run_id": run_id,
         "workspace_id": EXAMPLE_WORKSPACE_ID,
         "target_id": EXAMPLE_TARGET_ID,
@@ -136,7 +136,7 @@ async def test_scope_mismatch():
     run_id = EXAMPLE_MISMATCH_RUN_ID
     # Use a target_id that does not match the orchestrator bootstrap target.
     payload = {
-        "contract_version": 1,
+        "contract_version": 2,
         "run_id": run_id,
         "workspace_id": EXAMPLE_WORKSPACE_ID,
         "target_id": "1c2d62cd-c4e4-49ee-986f-f8767e6a4902",
@@ -163,7 +163,7 @@ async def test_scope_mismatch():
 async def test_tool_calling():
     run_id = EXAMPLE_TOOL_RUN_ID
     payload = {
-        "contract_version": 1,
+        "contract_version": 2,
         "run_id": run_id,
         "workspace_id": EXAMPLE_WORKSPACE_ID,
         "target_id": EXAMPLE_TARGET_ID,

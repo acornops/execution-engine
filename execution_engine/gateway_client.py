@@ -55,7 +55,6 @@ class GatewayLlmClient:
         workflow_id: str | None = None,
         workflow_run_id: str | None = None,
         workflow_session_id: str | None = None,
-        workflow_step_id: str | None = None,
         agent_id: str | None = None,
         agent_version: int | None = None,
         trigger_id: str | None = None,
@@ -104,8 +103,6 @@ class GatewayLlmClient:
             payload["workflow_run_id"] = workflow_run_id
         if workflow_session_id is not None:
             payload["workflow_session_id"] = workflow_session_id
-        if workflow_step_id is not None:
-            payload["workflow_step_id"] = workflow_step_id
         if agent_id is not None:
             payload["agent_id"] = agent_id
         if agent_version is not None:

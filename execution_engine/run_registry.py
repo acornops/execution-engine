@@ -34,10 +34,9 @@ RunKey = Tuple[
     Optional[str],
     Optional[str],
     Optional[str],
-    Optional[str],
 ]
 # (scope_type, workspace_id, target_id, target_type, session_id, message_id, run_id,
-#  workflow_id, workflow_run_id, workflow_session_id, workflow_step_id)
+#  workflow_id, workflow_run_id, workflow_session_id)
 
 class RunState:
     """
@@ -72,7 +71,6 @@ class RunState:
         workflow_id: Optional[str] = None,
         workflow_run_id: Optional[str] = None,
         workflow_session_id: Optional[str] = None,
-        workflow_step_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         agent_version: Optional[int] = None,
         trigger_id: Optional[str] = None,
@@ -88,7 +86,6 @@ class RunState:
         self.workflow_id = workflow_id
         self.workflow_run_id = workflow_run_id
         self.workflow_session_id = workflow_session_id
-        self.workflow_step_id = workflow_step_id
         self.agent_id = agent_id
         self.agent_version = agent_version
         self.trigger_id = trigger_id
@@ -118,7 +115,6 @@ class RunState:
             self.workflow_id,
             self.workflow_run_id,
             self.workflow_session_id,
-            self.workflow_step_id,
         )
 
 class RunRegistry:
@@ -160,7 +156,6 @@ class RunRegistry:
         workflow_id: Optional[str] = None,
         workflow_run_id: Optional[str] = None,
         workflow_session_id: Optional[str] = None,
-        workflow_step_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         agent_version: Optional[int] = None,
         trigger_id: Optional[str] = None,
@@ -193,7 +188,6 @@ class RunRegistry:
             workflow_id,
             workflow_run_id,
             workflow_session_id,
-            workflow_step_id,
         )
         async with self._lock:
             if run_id in self._run_id_to_key:
@@ -216,7 +210,6 @@ class RunRegistry:
                         getattr(persisted, "workflow_id", None),
                         getattr(persisted, "workflow_run_id", None),
                         getattr(persisted, "workflow_session_id", None),
-                        getattr(persisted, "workflow_step_id", None),
                     )
                     if persisted_key != key:
                         raise ValueError(f"Run ID {run_id} already exists with different identity")
@@ -236,7 +229,6 @@ class RunRegistry:
                 workflow_id=workflow_id,
                 workflow_run_id=workflow_run_id,
                 workflow_session_id=workflow_session_id,
-                workflow_step_id=workflow_step_id,
                 agent_id=agent_id,
                 agent_version=agent_version,
                 trigger_id=trigger_id,
@@ -253,7 +245,6 @@ class RunRegistry:
                     workflow_id=state.workflow_id,
                     workflow_run_id=state.workflow_run_id,
                     workflow_session_id=state.workflow_session_id,
-                    workflow_step_id=state.workflow_step_id,
                     status=state.status.value,
                     created_at=state.created_at,
                 )
@@ -272,7 +263,6 @@ class RunRegistry:
                         getattr(persisted, "workflow_id", None),
                         getattr(persisted, "workflow_run_id", None),
                         getattr(persisted, "workflow_session_id", None),
-                        getattr(persisted, "workflow_step_id", None),
                     )
                     if persisted_key != key:
                         raise ValueError(f"Run ID {run_id} already exists with different identity")
@@ -304,7 +294,6 @@ class RunRegistry:
             workflow_id=getattr(persisted, "workflow_id", None),
             workflow_run_id=getattr(persisted, "workflow_run_id", None),
             workflow_session_id=getattr(persisted, "workflow_session_id", None),
-            workflow_step_id=getattr(persisted, "workflow_step_id", None),
             agent_id=getattr(persisted, "agent_id", None),
             agent_version=getattr(persisted, "agent_version", None),
             trigger_id=getattr(persisted, "trigger_id", None),
@@ -370,7 +359,6 @@ class RunRegistry:
             workflow_id=state.workflow_id,
             workflow_run_id=state.workflow_run_id,
             workflow_session_id=state.workflow_session_id,
-            workflow_step_id=state.workflow_step_id,
             status=state.status.value,
             created_at=state.created_at,
             started_at=state.started_at,
@@ -448,7 +436,6 @@ class RunRegistry:
                 workflow_id=persisted.workflow_id,
                 workflow_run_id=persisted.workflow_run_id,
                 workflow_session_id=persisted.workflow_session_id,
-                workflow_step_id=persisted.workflow_step_id,
             )
             state.status = RunStatus.FAILED
             state.created_at = persisted.created_at
