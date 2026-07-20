@@ -31,8 +31,8 @@
         "policy.{max_runtime_ms,max_output_tokens,budget_cents,max_steps,max_tool_calls,max_duplicate_tool_calls}",
         "context.{endpoint,max_context_tokens}",
         "llm.{provider,model,temperature,mode,reasoning.{summary_mode,effort},gateway.{url,token,request_timeout_ms}}",
-        "tools.{tool_registry_version,allowed_tools,allowed_tool_refs[].{server_id,tool_name},native_tools,platform_functions[].{id,model_alias},tool_specs[].{server_id?,tool_ref?},write_unavailable_reason?,gateway.{url,token},confirmation_required_for_write,approval_timeout_seconds}",
-        "skills?.{contract_version,entries[].{ref,skill_id,name,description,file_count,total_bytes},load_endpoint}",
+        "tools.{tool_registry_version,allowed_tools,allowed_tool_refs[].{server_id,tool_name},native_tools,platform_functions[].{id,model_alias},tool_specs[].{server_id?,tool_ref?},referenced_tools[].{name,label,server_id?,tool_name?},write_unavailable_reason?,gateway.{url,token},confirmation_required_for_write,approval_timeout_seconds}",
+        "skills?.{contract_version,entries[].{ref,skill_id,name,description,file_count,total_bytes},referenced_refs[],load_endpoint}",
         "routing",
         "tracing"
       ],

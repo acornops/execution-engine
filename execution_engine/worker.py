@@ -408,6 +408,12 @@ class Worker:
                 skill_loader=load_skill_context if snapshot.skills and snapshot.skills.entries else None,
                 max_skill_loads=settings.AGENT_MAX_SKILL_LOADS_PER_RUN,
                 max_loaded_skill_bytes=settings.AGENT_MAX_LOADED_SKILL_BYTES_PER_RUN,
+                referenced_tool_names=[
+                    str(tool.get("name"))
+                    for tool in snapshot.tools.referenced_tools
+                    if isinstance(tool, dict) and tool.get("name")
+                ],
+                referenced_skill_refs=snapshot.skills.referenced_refs if snapshot.skills else [],
             )
             if state.cancel_event.is_set():
                 finish_cancelled_run()

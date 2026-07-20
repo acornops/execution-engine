@@ -6,6 +6,11 @@ import time
 from contextlib import suppress
 from typing import Any, AsyncGenerator, AsyncIterator, Dict, List
 
+from execution_engine.agent.assistant_reference_context import (
+    native_tool_instruction,
+    preload_referenced_skills,
+    referenced_tool_instruction,
+)
 from execution_engine.agent.engine import AgentEngine
 from execution_engine.agent.remediation_verification import (
     finalize_remediation_verifications,
@@ -52,6 +57,7 @@ class ReActAgentEngine(AgentEngine):
         skill_loader: SkillLoader | None = None,
         max_skill_loads: int = 3,
         max_loaded_skill_bytes: int = 262144,
+        referenced_tool_names: List[str] | None = None, referenced_skill_refs: List[str] | None = None,
     ):
         """
         Initializes the ReAct engine.
@@ -72,6 +78,8 @@ class ReActAgentEngine(AgentEngine):
         self.skill_loader = skill_loader
         self.max_skill_loads = max(max_skill_loads, 0)
         self.max_loaded_skill_bytes = max(max_loaded_skill_bytes, 0)
+        self.referenced_tool_names = list(dict.fromkeys(referenced_tool_names or []))
+        self.referenced_skill_refs = list(dict.fromkeys(referenced_skill_refs or []))
 
     @staticmethod
     async def _iterate_until_cancelled(
@@ -143,27 +151,6 @@ class ReActAgentEngine(AgentEngine):
             )
         return None
 
-    @staticmethod
-    def _native_tool_instruction(native_tools: List[Dict[str, Any]] | None) -> str | None:
-        if not native_tools:
-            return None
-
-        capability_labels: List[str] = []
-        for tool in native_tools:
-            if tool.get("id") == "web_search":
-                capability_labels.append("Web Search")
-
-        if not capability_labels:
-            return None
-
-        capabilities = ", ".join(dict.fromkeys(capability_labels))
-        return (
-            f"Built-in capabilities enabled for this run: {capabilities}. "
-            "When the user asks what tools or capabilities are available, include these separately from "
-            "standard callable function tools. Built-in capabilities may not appear as standard tool-call "
-            "events in run details."
-        )
-
     async def run(
         self,
         messages: List[Message],
@@ -218,9 +205,25 @@ class ReActAgentEngine(AgentEngine):
             write_unavailable_instruction = self._write_unavailable_instruction(self.write_unavailable_reason)
             if write_unavailable_instruction:
                 llm_messages.insert(0, {"role": "system", "content": write_unavailable_instruction})
-            native_tool_instruction = self._native_tool_instruction(native_tools)
-            if native_tool_instruction:
-                llm_messages.insert(0, {"role": "system", "content": native_tool_instruction})
+            native_instruction = native_tool_instruction(native_tools)
+            if native_instruction:
+                llm_messages.insert(0, {"role": "system", "content": native_instruction})
+            referenced_instruction = referenced_tool_instruction(self.referenced_tool_names)
+            if referenced_instruction:
+                llm_messages.insert(0, {"role": "system", "content": referenced_instruction})
+            if self.referenced_skill_refs:
+                skill_state = SkillLoadState(loaded_skill_refs, loaded_skill_bytes)
+                async for event in preload_referenced_skills(
+                    self.referenced_skill_refs,
+                    llm_messages,
+                    skill_state,
+                    self.skill_loader,
+                    self.max_skill_loads,
+                    self.max_loaded_skill_bytes,
+                ):
+                    yield event
+                loaded_skill_refs = skill_state.loaded_refs
+                loaded_skill_bytes = skill_state.loaded_bytes
             request_preview = self._summarize_user_request(llm_messages)
             if request_preview:
                 yield {

@@ -176,6 +176,7 @@ class ToolConfig(BaseModel):
     native_tools: List[Dict[str, Any]] = Field(default_factory=list)
     platform_functions: List[Dict[str, str]] = Field(default_factory=list)
     tool_specs: List[Dict[str, Any]] = Field(default_factory=list)
+    referenced_tools: List[Dict[str, str]] = Field(default_factory=list, max_length=8)
     write_unavailable_reason: Optional[str] = None
     confirmation_required_for_write: bool = True
     approval_timeout_seconds: int = 300
@@ -204,6 +205,7 @@ class SkillConfig(BaseModel):
     """Target troubleshooting skill bundles attached to a run snapshot."""
     contract_version: Literal[2] = 2
     entries: List[SkillEntry] = Field(default_factory=list)
+    referenced_refs: List[str] = Field(default_factory=list, max_length=8)
     load_endpoint: Optional[str] = None
 
 class LoadedSkillSnapshot(BaseModel):

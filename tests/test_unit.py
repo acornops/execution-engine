@@ -1863,6 +1863,53 @@ async def test_react_engine_loads_skill_before_same_turn_tool_calls():
 
 
 @pytest.mark.asyncio
+async def test_react_engine_preloads_referenced_skill_and_names_exact_referenced_tool():
+    llm_client = FakeStreamingLlmClient(streams=[[
+        {"type": "delta", "text": "Checked the referenced capability."},
+        {"type": "final", "usage": {"input_tokens": 4, "output_tokens": 5, "tool_calls": 0}},
+    ]])
+    loaded_refs: list[str] = []
+
+    async def load_skill(skill_ref: str) -> dict[str, object]:
+        loaded_refs.append(skill_ref)
+        return {
+            "skill_ref": skill_ref,
+            "skill_id": "target-skill-1",
+            "name": "CNPG triage",
+            "file_count": 1,
+            "total_bytes": 42,
+            "content_hash": "sha256:abc",
+            "message": {"role": "system", "content": "Loaded referenced CNPG triage instructions."},
+        }
+
+    engine = ReActAgentEngine(
+        llm_client,
+        FakeToolClient(),
+        react_policy(max_steps=2, max_tool_calls=2),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1604"),
+        skill_loader=load_skill,
+        referenced_tool_names=["mcp__postgres__inspect_cluster"],
+        referenced_skill_refs=["skill_1"],
+    )
+
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Investigate the database failover.")],
+            llm_config(),
+            [{"name": "mcp__postgres__inspect_cluster"}],
+            asyncio.Event(),
+        )
+    ]
+
+    assert loaded_refs == ["skill_1"]
+    assert [chunk["type"] for chunk in chunks[:2]] == ["skill_context_load_started", "skill_context_loaded"]
+    first_request_messages = llm_client.calls[0]["messages"]
+    assert any("Loaded referenced CNPG triage instructions" in message["content"] for message in first_request_messages)
+    assert any("`mcp__postgres__inspect_cluster`" in message["content"] for message in first_request_messages)
+
+
+@pytest.mark.asyncio
 async def test_react_engine_dedupes_repeated_skill_loads_without_duplicate_context():
     llm_client = FakeStreamingLlmClient(
         streams=[
