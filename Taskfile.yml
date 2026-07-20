@@ -58,7 +58,7 @@ tasks:
     desc: Run unit tests
     cmds:
       - task python:check
-      - "PYTHONPATH=. {{.PYTHON}} -m pytest tests/test_unit.py tests/test_worker_fallback.py tests/test_supporting_components.py tests/test_tool_context.py tests/test_remediation.py tests/test_worker_approval_resume.py"
+      - "PYTHONPATH=. {{.PYTHON}} -m pytest tests/test_unit.py tests/test_worker_fallback.py tests/test_supporting_components.py tests/test_tool_context.py tests/test_remediation.py tests/test_worker_approval_resume.py tests/test_resource_bindings.py"
 
   contracts:check:
     desc: Run contract documentation checks

@@ -1,9 +1,11 @@
 """Pydantic models for API requests, responses, and internal data structures."""
 
+import hashlib
 from datetime import UTC, datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+import rfc8785
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from execution_engine.examples import (
     EXAMPLE_MESSAGE_ID,
@@ -148,6 +150,74 @@ class ContextConfig(BaseModel):
     endpoint: str
     max_context_tokens: int
 
+class ResourceBinding(BaseModel):
+    """An exact prompt resource binding frozen by the control plane."""
+    binding_id: str
+    type: str
+    resource_id: str
+    provider: str
+    provider_version: str
+    workspace_id: str
+    label_snapshot: str
+    source: Literal["explicit", "implicit", "trigger"]
+    operations: List[str]
+    context_mode: Literal["inline", "tool", "routing_only"]
+    provider_data: Optional[Dict[str, Any]] = None
+
+    @model_validator(mode="after")
+    def validate_operations(self):
+        if not self.operations or len(self.operations) > 64:
+            raise ValueError("resource binding operations must contain 1 to 64 entries")
+        if len(self.operations) != len(set(self.operations)) or any(
+            not operation.strip() for operation in self.operations
+        ):
+            raise ValueError("resource binding operations must be unique and non-empty")
+        return self
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+class ResourceConfig(BaseModel):
+    """Prompt and binding integrity metadata for a Workflow run."""
+    prompt_digest: str
+    binding_digest: str
+    resolved_at: str
+    bindings: List[ResourceBinding] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_integrity_metadata(self):
+        if len(self.prompt_digest) != 64 or len(self.binding_digest) != 64:
+            raise ValueError("resource digests must be SHA-256 hex strings")
+        if any(character not in "0123456789abcdef" for character in self.prompt_digest + self.binding_digest):
+            raise ValueError("resource digests must be lowercase SHA-256 hex strings")
+        binding_ids = [binding.binding_id for binding in self.bindings]
+        if len(binding_ids) != len(set(binding_ids)):
+            raise ValueError("resource binding IDs must be unique")
+        canonical = []
+        for binding in self.bindings:
+            value = {
+                "bindingId": binding.binding_id,
+                "type": binding.type,
+                "resourceId": binding.resource_id,
+                "provider": binding.provider,
+                "providerVersion": binding.provider_version,
+                "workspaceId": binding.workspace_id,
+                "labelSnapshot": binding.label_snapshot,
+                "source": binding.source,
+                "operations": binding.operations,
+                "contextMode": binding.context_mode,
+            }
+            if binding.provider_data is not None:
+                value["providerData"] = binding.provider_data
+            canonical.append(value)
+        actual = hashlib.sha256(
+            rfc8785.dumps(canonical)
+        ).hexdigest()
+        if actual != self.binding_digest:
+            raise ValueError("binding_digest does not match bindings")
+        return self
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
 class GatewayConfig(BaseModel):
     """Configuration for the Execution Gateway."""
     url: str
@@ -226,12 +296,24 @@ class ExecutionSnapshot(BaseModel):
     scope: Scope
     policy: Policy
     context: ContextConfig
+    resources: Optional[ResourceConfig] = None
     llm: LLMConfig
     tools: ToolConfig
     assistant: Optional[AssistantConfig] = None
     skills: Optional[SkillConfig] = None
     routing: Dict[str, Any]
     tracing: Dict[str, Any]
+
+    @model_validator(mode="after")
+    def validate_resource_scope(self):
+        if self.resources and any(
+            binding.workspace_id != self.scope.workspace_id
+            for binding in self.resources.bindings
+        ):
+            raise ValueError("resource bindings must match the run workspace")
+        return self
+
+    model_config = ConfigDict(extra="forbid")
 
 # --- Context Fetch ---
 
@@ -261,6 +343,7 @@ class ContextPackage(BaseModel):
     messages: List[Message]
     summaries: List[Any] = []
     attachments: List[Any] = []
+    resources: List[Dict[str, Any]] = []
     target_insights: TargetInsightsContext = Field(default_factory=TargetInsightsContext)
 
 # --- Events ---

@@ -7,3 +7,4 @@ tenacity
 anyio
 prometheus-client
 redis
+rfc8785==0.1.4

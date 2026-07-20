@@ -76,10 +76,29 @@ def test_platform_functions_require_all_snapshot_authorities():
 @pytest.mark.parametrize(
     "platform_functions,allowed_tools,tool_specs",
     [
-        ([{"id": "reports.pdf.generate", "model_alias": "reports.pdf.generate"}], ["reports.pdf.generate"], [{"name": "reports.pdf.generate"}]),
-        ([{"id": "reports.pdf.generate", "model_alias": "acornops_generate_pdf_report"}], [], [{"name": "acornops_generate_pdf_report"}]),
-        ([{"id": "reports.pdf.generate", "model_alias": "acornops_generate_pdf_report"}], ["acornops_generate_pdf_report"], []),
-        ([{"id": "reports.pdf.generate", "model_alias": "acornops_generate_pdf_report"}, {"id": "reports.pdf.generate", "model_alias": "another_alias"}], ["acornops_generate_pdf_report", "another_alias"], [{"name": "acornops_generate_pdf_report"}, {"name": "another_alias"}]),
+        (
+            [{"id": "reports.pdf.generate", "model_alias": "reports.pdf.generate"}],
+            ["reports.pdf.generate"],
+            [{"name": "reports.pdf.generate"}],
+        ),
+        (
+            [{"id": "reports.pdf.generate", "model_alias": "acornops_generate_pdf_report"}],
+            [],
+            [{"name": "acornops_generate_pdf_report"}],
+        ),
+        (
+            [{"id": "reports.pdf.generate", "model_alias": "acornops_generate_pdf_report"}],
+            ["acornops_generate_pdf_report"],
+            [],
+        ),
+        (
+            [
+                {"id": "reports.pdf.generate", "model_alias": "acornops_generate_pdf_report"},
+                {"id": "reports.pdf.generate", "model_alias": "another_alias"},
+            ],
+            ["acornops_generate_pdf_report", "another_alias"],
+            [{"name": "acornops_generate_pdf_report"}, {"name": "another_alias"}],
+        ),
     ],
 )
 def test_platform_function_mappings_fail_closed(platform_functions, allowed_tools, tool_specs):

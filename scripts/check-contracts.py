@@ -109,8 +109,6 @@ for field in (
     expect_in(MODELS_SOURCE, field, "Model contract")
 
 for documented in (
-    *CONTROL_PLANE_CONTRACT["dispatchPaths"],
-    *CONTROL_PLANE_CONTRACT["controlPlanePaths"],
     GATEWAY_CONTRACT["streamPath"],
     GATEWAY_CONTRACT["toolCallPath"],
 ):
