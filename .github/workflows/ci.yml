@@ -123,7 +123,7 @@ jobs:
           pip install -c constraints.txt -r requirements-dev.txt
       - name: Run unit tests
         run: |
-          PYTHONPATH=. pytest tests/test_unit.py tests/test_worker_fallback.py tests/test_supporting_components.py --cov=execution_engine --cov-report=term-missing --cov-report=xml
+          PYTHONPATH=. pytest tests/test_unit.py tests/test_worker_fallback.py tests/test_supporting_components.py tests/test_resource_bindings.py --cov=execution_engine --cov-report=term-missing --cov-report=xml
           python3 scripts/check-contracts.py
           python3 scripts/check-harness.py
       - name: Upload coverage artifact

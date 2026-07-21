@@ -60,6 +60,23 @@ async def bootstrap(run_id: str):
         "tools": {
             "tool_registry_version": "trv_17",
             "allowed_tools": ["get_weather"] if run_id == EXAMPLE_TOOL_RUN_ID else [],
+            "allowed_tool_refs": [
+                {"server_id": "weather-server", "tool_name": "get_weather"}
+            ] if run_id == EXAMPLE_TOOL_RUN_ID else [],
+            "tool_specs": [
+                {
+                    "name": "get_weather",
+                    "server_id": "weather-server",
+                    "tool_name": "get_weather",
+                    "capability": "read",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"location": {"type": "string"}},
+                        "required": ["location"],
+                        "additionalProperties": False,
+                    },
+                }
+            ] if run_id == EXAMPLE_TOOL_RUN_ID else [],
             "gateway": {
                 "url": GATEWAY_URL,
                 "token": "JWT_SHORT_LIVED"
