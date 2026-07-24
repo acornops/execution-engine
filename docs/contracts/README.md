@@ -32,6 +32,8 @@ The execution engine owns run execution and talks only to the control plane and 
   intersects `platform_functions`, `allowed_tools`, and `tool_specs`. The engine
   maps the alias back to the canonical control-plane ID and sends the original
   model call ID; missing, duplicate, and invalid mappings fail closed.
+  The `acornops_fetch` alias for `http.fetch.get` uses this same platform-function
+  route; execution-engine does not make the external HTTP request itself.
   Provider-native `web_search` remains the only declaration sent through
   `native_tools`, while target and MCP tools retain their existing route.
 - Execution-engine never calls target agents, management-console, or external MCP servers directly.

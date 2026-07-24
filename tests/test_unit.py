@@ -623,6 +623,30 @@ async def test_orchestrator_client_reads_run_event_cursor():
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_client_allows_platform_native_tool_deadline_to_finish():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/internal/v1/runs/r1/native-tools/http.fetch.get/call"
+        assert request.extensions["timeout"]["read"] == 20.0
+        return httpx.Response(200, json={"structuredContent": {"status": 200}})
+
+    client = OrchestratorClient()
+    await client.close()
+    client.base_url = "http://orchestrator"
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        result = await client.call_platform_native_tool(
+            "r1",
+            "http.fetch.get",
+            {"url": "https://status.example.com/health"},
+            call_id="call-1",
+        )
+        assert result["structuredContent"]["status"] == 200
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_client_encodes_skill_snapshot_path_params():
     async def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == "http://orchestrator/internal/v1/runs/run%2F1/skills/skill%2F..%2F1"

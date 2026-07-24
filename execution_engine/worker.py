@@ -36,7 +36,12 @@ from execution_engine.worker_run_support import (
     start_event_manager,
     write_result_outcome_unknown,
 )
-from execution_engine.worker_tool_artifacts import persist_tool_result_artifact, tool_result_event_payload
+from execution_engine.worker_tool_artifacts import (
+    persist_tool_result_artifact,
+    tool_call_event_arguments,
+    tool_result_event_payload,
+    tool_result_event_summary,
+)
 from execution_engine.worker_tool_authority import build_runtime_tool_client, provider_native_tools
 from execution_engine.worker_tool_sanitizer import sanitize_tool_spec_for_llm
 
@@ -304,7 +309,7 @@ class Worker:
                             emit_event("tool_call_started", {
                                 "call_id": pending_call_id,
                                 "tool": pending_tool_name,
-                                "arguments": pending_arguments,
+                                "arguments": tool_call_event_arguments(pending_tool_name, pending_arguments),
                             })
                             tool_result = await tool_client.call_tool(
                                 pending_tool_name,
@@ -466,7 +471,7 @@ class Worker:
                             emit_event("tool_call_started", {
                                 "call_id": chunk["call_id"],
                                 "tool": chunk["tool"],
-                                "arguments": chunk["arguments"]
+                                "arguments": tool_call_event_arguments(chunk["tool"], chunk["arguments"]),
                             })
                         elif chunk["type"] == "tool_result":
                             artifact, artifact_unavailable = await persist_tool_result_artifact(
@@ -475,7 +480,7 @@ class Worker:
                             tool_result_events.append(
                                 {
                                     "tool": chunk["tool"],
-                                    "result": chunk["result"],
+                                    "result": tool_result_event_summary(chunk["tool"], chunk["result"]),
                                     "is_error": bool(chunk["is_error"]),
                                 }
                             )

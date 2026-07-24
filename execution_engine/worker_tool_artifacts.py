@@ -14,6 +14,32 @@ ARTIFACT_METADATA_FIELDS = (
 UUID_V4_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 RFC3339_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
+FETCH_MODEL_ALIAS = "acornops_fetch"
+
+
+def tool_call_event_arguments(tool_name: object, arguments: object) -> object:
+    """Remove Fetch URL paths and queries from durable tool-call events."""
+    if str(tool_name) == FETCH_MODEL_ALIAS:
+        return {"url": "[redacted]"}
+    return arguments
+
+
+def tool_result_event_summary(tool_name: object, supplied_result: object) -> object:
+    """Remove Fetch URLs and response bodies from durable events and fallbacks."""
+    if str(tool_name) != FETCH_MODEL_ALIAS:
+        return supplied_result
+    structured = supplied_result.get("structuredContent") if isinstance(supplied_result, dict) else None
+    structured = structured if isinstance(structured, dict) else {}
+    return {
+        "status": structured.get("status"),
+        "contentType": structured.get("contentType"),
+        "responseSizeBytes": structured.get("responseSizeBytes"),
+        "retrievedAt": structured.get("retrievedAt"),
+        "untrustedExternalData": True,
+    } if structured else {
+        "code": supplied_result.get("code") if isinstance(supplied_result, dict) else None,
+        "untrustedExternalData": True,
+    }
 
 
 def _valid_artifact_metadata(value: Any) -> bool:
@@ -69,7 +95,7 @@ def tool_result_event_payload(
     chunk: dict[str, Any], artifact: dict[str, Any] | None, artifact_unavailable: bool
 ) -> dict[str, Any]:
     """Build the compact-only durable tool completion event."""
-    supplied_result = chunk.get("result")
+    supplied_result = tool_result_event_summary(chunk.get("tool"), chunk.get("result"))
     result = compact_tool_context(supplied_result)
     supplied_meta = chunk.get("context_meta")
     meta = supplied_meta if isinstance(supplied_meta, dict) else {}
