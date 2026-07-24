@@ -75,8 +75,9 @@ for field in (
     "target_id: Optional[str] = Field(default=None, examples=[EXAMPLE_TARGET_ID])",
     "target_type: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)",
     "workflow_id: Optional[str] = None",
-    "workflow_run_id: Optional[str] = None",
+    "execution_id: Optional[str] = None",
     "workflow_session_id: Optional[str] = None",
+    'executor_role: Optional[Literal["coordinator", "specialist"]] = None',
     "session_id: str",
     "message_id: str",
     "requested_at: datetime",
@@ -103,7 +104,7 @@ for field in (
     "targetId: Optional[str] = None",
     "targetType: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)",
     "workflowId: Optional[str] = None",
-    "workflowRunId: Optional[str] = None",
+    "executionId: Optional[str] = None",
     "workflowSessionId: Optional[str] = None",
 ):
     expect_in(MODELS_SOURCE, field, "Model contract")

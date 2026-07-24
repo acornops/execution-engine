@@ -110,8 +110,13 @@ class PersistedRun:
     message_id: str
     scope_type: str
     workflow_id: str | None
-    workflow_run_id: str | None
+    execution_id: str | None
     workflow_session_id: str | None
+    executor_role: str | None
+    parent_run_id: str | None
+    agent_id: str | None
+    agent_version: int | None
+    trigger_id: str | None
     status: str
     created_at: datetime
     started_at: datetime | None
@@ -190,8 +195,13 @@ class DurabilityStore:
             message_id=value["message_id"],
             scope_type=value.get("scope_type", "target"),
             workflow_id=value.get("workflow_id"),
-            workflow_run_id=value.get("workflow_run_id"),
+            execution_id=value.get("execution_id"),
             workflow_session_id=value.get("workflow_session_id"),
+            executor_role=value.get("executor_role"),
+            parent_run_id=value.get("parent_run_id"),
+            agent_id=value.get("agent_id"),
+            agent_version=value.get("agent_version"),
+            trigger_id=value.get("trigger_id"),
             status=value["status"],
             created_at=_parse_iso(value.get("created_at")) or datetime.now(UTC),
             started_at=_parse_iso(value.get("started_at")),
@@ -209,8 +219,13 @@ class DurabilityStore:
         message_id: str,
         scope_type: str = "target",
         workflow_id: str | None = None,
-        workflow_run_id: str | None = None,
+        execution_id: str | None = None,
         workflow_session_id: str | None = None,
+        executor_role: str | None = None,
+        parent_run_id: str | None = None,
+        agent_id: str | None = None,
+        agent_version: int | None = None,
+        trigger_id: str | None = None,
         status: str,
         created_at: datetime,
     ) -> bool:
@@ -225,8 +240,13 @@ class DurabilityStore:
                 "message_id": message_id,
                 "scope_type": scope_type,
                 "workflow_id": workflow_id,
-                "workflow_run_id": workflow_run_id,
+                "execution_id": execution_id,
                 "workflow_session_id": workflow_session_id,
+                "executor_role": executor_role,
+                "parent_run_id": parent_run_id,
+                "agent_id": agent_id,
+                "agent_version": agent_version,
+                "trigger_id": trigger_id,
                 "status": status,
                 "created_at": _to_iso(created_at),
                 "started_at": None,
@@ -260,8 +280,13 @@ class DurabilityStore:
         message_id: str,
         scope_type: str = "target",
         workflow_id: str | None = None,
-        workflow_run_id: str | None = None,
+        execution_id: str | None = None,
         workflow_session_id: str | None = None,
+        executor_role: str | None = None,
+        parent_run_id: str | None = None,
+        agent_id: str | None = None,
+        agent_version: int | None = None,
+        trigger_id: str | None = None,
         status: str,
         created_at: datetime,
         started_at: datetime | None,
@@ -281,8 +306,13 @@ class DurabilityStore:
                     "message_id": message_id,
                     "scope_type": scope_type,
                     "workflow_id": workflow_id,
-                    "workflow_run_id": workflow_run_id,
+                    "execution_id": execution_id,
                     "workflow_session_id": workflow_session_id,
+                    "executor_role": executor_role,
+                    "parent_run_id": parent_run_id,
+                    "agent_id": agent_id,
+                    "agent_version": agent_version,
+                    "trigger_id": trigger_id,
                     "status": status,
                     "created_at": _to_iso(created_at),
                     "started_at": _to_iso(started_at) if started_at else None,
@@ -310,8 +340,13 @@ class DurabilityStore:
                     message_id=value["message_id"],
                     scope_type=value.get("scope_type", "target"),
                     workflow_id=value.get("workflow_id"),
-                    workflow_run_id=value.get("workflow_run_id"),
+                    execution_id=value.get("execution_id"),
                     workflow_session_id=value.get("workflow_session_id"),
+                    executor_role=value.get("executor_role"),
+                    parent_run_id=value.get("parent_run_id"),
+                    agent_id=value.get("agent_id"),
+                    agent_version=value.get("agent_version"),
+                    trigger_id=value.get("trigger_id"),
                     status=value["status"],
                     created_at=_parse_iso(value.get("created_at")) or datetime.now(UTC),
                     started_at=_parse_iso(value.get("started_at")),

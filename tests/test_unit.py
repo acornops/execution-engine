@@ -219,8 +219,10 @@ async def test_run_registry_persists_workspace_workflow_identity_for_idempotency
         EXAMPLE_MESSAGE_ID,
         scope_type="workspace",
         workflow_id="workspace-tool-exposure-audit",
-        workflow_run_id="workflow-run-1",
+        execution_id="workflow-execution-1",
         workflow_session_id="workflow-session-1",
+        executor_role="specialist",
+        parent_run_id="coordinator-root-1",
         agent_id="agent-cluster-triage",
         agent_version=4,
         trigger_id="trigger-manual-1",
@@ -233,8 +235,13 @@ async def test_run_registry_persists_workspace_workflow_identity_for_idempotency
     assert persisted.target_id is None
     assert persisted.target_type is None
     assert persisted.workflow_id == "workspace-tool-exposure-audit"
-    assert persisted.workflow_run_id == "workflow-run-1"
+    assert persisted.execution_id == "workflow-execution-1"
     assert persisted.workflow_session_id == "workflow-session-1"
+    assert persisted.executor_role == "specialist"
+    assert persisted.parent_run_id == "coordinator-root-1"
+    assert persisted.agent_id == "agent-cluster-triage"
+    assert persisted.agent_version == 4
+    assert persisted.trigger_id == "trigger-manual-1"
 
     recovered_registry = RunRegistry(max_concurrent_runs=10, durability_store=store)
     recovered, recovered_created = await recovered_registry.get_or_create(
@@ -246,14 +253,39 @@ async def test_run_registry_persists_workspace_workflow_identity_for_idempotency
         EXAMPLE_MESSAGE_ID,
         scope_type="workspace",
         workflow_id="workspace-tool-exposure-audit",
-        workflow_run_id="workflow-run-1",
+        execution_id="workflow-execution-1",
         workflow_session_id="workflow-session-1",
+        executor_role="specialist",
+        parent_run_id="coordinator-root-1",
+        agent_id="agent-cluster-triage",
+        agent_version=4,
+        trigger_id="trigger-manual-1",
     )
 
     assert recovered_created is False
     assert recovered.scope_type == "workspace"
     assert recovered.workflow_id == "workspace-tool-exposure-audit"
-    assert recovered.workflow_run_id == "workflow-run-1"
+    assert recovered.execution_id == "workflow-execution-1"
+    assert recovered.parent_run_id == "coordinator-root-1"
+
+    with pytest.raises(ValueError, match="different identity"):
+        await recovered_registry.get_or_create(
+            EXAMPLE_WORKSPACE_ID,
+            None,
+            None,
+            "workflow-session-1",
+            "run-workflow-identity",
+            EXAMPLE_MESSAGE_ID,
+            scope_type="workspace",
+            workflow_id="workspace-tool-exposure-audit",
+            execution_id="workflow-execution-1",
+            workflow_session_id="workflow-session-1",
+            executor_role="specialist",
+            parent_run_id="different-root",
+            agent_id="agent-cluster-triage",
+            agent_version=4,
+            trigger_id="trigger-manual-1",
+        )
 
 
 def test_production_config_rejects_default_tokens_and_redis():
@@ -719,7 +751,7 @@ async def test_orchestrator_client_accepts_targetless_workflow_approval():
                 "runId": "r-workflow",
                 "workspaceId": EXAMPLE_WORKSPACE_ID,
                 "workflowId": "workspace-tool-exposure-audit",
-                "workflowRunId": "workflow-run-1",
+                "executionId": "workflow-execution-1",
                 "workflowSessionId": "workflow-session-1",
                 "workflowStepId": "inventory-scope",
                 "toolCallId": "workflow-gate-1",
@@ -749,7 +781,7 @@ async def test_orchestrator_client_accepts_targetless_workflow_approval():
         assert approval.targetId is None
         assert approval.targetType is None
         assert approval.workflowId == "workspace-tool-exposure-audit"
-        assert approval.workflowRunId == "workflow-run-1"
+        assert approval.executionId == "workflow-execution-1"
         assert approval.workflowSessionId == "workflow-session-1"
     finally:
         await client.close()
@@ -775,7 +807,7 @@ def test_run_continuation_accepts_targetless_workflow_approval():
                 "runId": "r-workflow",
                 "workspaceId": EXAMPLE_WORKSPACE_ID,
                 "workflowId": "workspace-tool-exposure-audit",
-                "workflowRunId": "workflow-run-1",
+                "executionId": "workflow-execution-1",
                 "workflowSessionId": "workflow-session-1",
                 "workflowStepId": "inventory-scope",
                 "toolCallId": "workflow-gate-1",
@@ -1064,6 +1096,33 @@ def test_run_request_rejects_v1_and_unknown_compatibility_fields():
         RunRequest.model_validate(payload)
 
 
+def test_run_request_accepts_specialist_child_and_rejects_coordinator_parent():
+    payload = {
+        "contract_version": 2,
+        "scope_type": "workspace",
+        "run_id": "run-child-1",
+        "workspace_id": EXAMPLE_WORKSPACE_ID,
+        "session_id": "workflow-session-1",
+        "message_id": EXAMPLE_MESSAGE_ID,
+        "workflow_id": "workflow-1",
+        "execution_id": "execution-1",
+        "workflow_session_id": "workflow-session-1",
+        "executor_role": "specialist",
+        "parent_run_id": "run-root-1",
+        "agent_id": "agent-1",
+        "agent_version": 3,
+        "requested_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    child = RunRequest.model_validate(payload)
+    assert child.parent_run_id == "run-root-1"
+
+    payload["executor_role"] = "coordinator"
+    payload.pop("agent_id")
+    payload.pop("agent_version")
+    with pytest.raises(ValidationError, match="forbid parent"):
+        RunRequest.model_validate(payload)
+
+
 @pytest.mark.asyncio
 async def test_coordination_functions_never_dispatch_through_the_mcp_gateway():
     gateway = MagicMock()
@@ -1083,12 +1142,21 @@ async def test_coordination_functions_never_dispatch_through_the_mcp_gateway():
         "targetBinding": {"targetId": "target-1", "targetType": "kubernetes"},
         "taskPrompt": "Inspect the target",
         "required": True,
-    })
+    }, call_id="call-delegate-1")
     awaited = await client.call_tool(CoordinationToolClient.AWAIT, {})
 
     assert delegated["full_result"]["id"] == "delegation-1"
     assert awaited["full_result"]["items"][0]["id"] == "delegation-1"
-    orchestrator.create_delegation.assert_awaited_once()
+    orchestrator.create_delegation.assert_awaited_once_with(
+        "run-manager-1",
+        {
+            "capabilityId": "target.diagnostics.read",
+            "targetBinding": {"targetId": "target-1", "targetType": "kubernetes"},
+            "taskPrompt": "Inspect the target",
+            "required": True,
+            "toolCallId": "call-delegate-1",
+        },
+    )
     orchestrator.list_delegations.assert_awaited_once_with("run-manager-1")
     gateway.call_tool.assert_not_awaited()
 
@@ -2155,8 +2223,9 @@ async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
         session_id="workflow-session-1",
         run_id="run-workflow-1",
         workflow_id="workspace-tool-exposure-audit",
-        workflow_run_id="workflow-run-1",
+        execution_id="workflow-execution-1",
         workflow_session_id="workflow-session-1",
+        executor_role="specialist",
         agent_id="agent-cluster-triage",
         agent_version=4,
         trigger_id="trigger-manual-1",
@@ -2194,7 +2263,8 @@ async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
     assert llm_client.calls[0]["target_id"] is None
     assert llm_client.calls[0]["target_type"] is None
     assert llm_client.calls[0]["workflow_id"] == "workspace-tool-exposure-audit"
-    assert llm_client.calls[0]["workflow_run_id"] == "workflow-run-1"
+    assert llm_client.calls[0]["execution_id"] == "workflow-execution-1"
+    assert llm_client.calls[0]["executor_role"] == "specialist"
     assert llm_client.calls[0]["workflow_session_id"] == "workflow-session-1"
     assert llm_client.calls[0]["agent_id"] == "agent-cluster-triage"
     assert llm_client.calls[0]["agent_version"] == 4
@@ -2256,8 +2326,9 @@ async def test_gateway_tool_client_sends_targetless_workspace_workflow_tool_call
         allowed_tools=["mcp.tools.list"],
         scope_type="workspace",
         workflow_id="workspace-tool-exposure-audit",
-        workflow_run_id="workflow-run-1",
+        execution_id="workflow-execution-1",
         workflow_session_id="workflow-session-1",
+        executor_role="specialist",
         agent_id="agent-cluster-triage",
         agent_version=4,
         trigger_id="trigger-manual-1",
@@ -2276,7 +2347,8 @@ async def test_gateway_tool_client_sends_targetless_workspace_workflow_tool_call
     assert payload["target_id"] is None
     assert payload["target_type"] is None
     assert payload["workflow_id"] == "workspace-tool-exposure-audit"
-    assert payload["workflow_run_id"] == "workflow-run-1"
+    assert payload["execution_id"] == "workflow-execution-1"
+    assert payload["executor_role"] == "specialist"
     assert payload["workflow_session_id"] == "workflow-session-1"
     assert payload["agent_id"] == "agent-cluster-triage"
     assert payload["agent_version"] == 4
@@ -2330,9 +2402,6 @@ async def test_gateway_tool_client_serializes_only_bound_target_agent_identity(
             }
         },
         scope_type="target",
-        workflow_id="target-diagnostics",
-        workflow_run_id="workflow-run-target-1",
-        workflow_session_id="workflow-session-target-1",
         agent_id=agent_id,
         agent_version=agent_version,
         trigger_id="trigger-manual-1",
@@ -2359,8 +2428,9 @@ async def test_gateway_tool_client_serializes_only_bound_target_agent_identity(
         assert payload["agent_id"] == agent_id
         assert payload["agent_version"] == agent_version
     assert "workflow_id" not in payload
-    assert "workflow_run_id" not in payload
+    assert "execution_id" not in payload
     assert "workflow_session_id" not in payload
+    assert "executor_role" not in payload
     assert "trigger_id" not in payload
 
 

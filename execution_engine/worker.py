@@ -1,4 +1,4 @@
-"""Worker that manages the lifecycle of agent runs."""
+"""Worker that manages the lifecycle of execution runs."""
 
 import asyncio
 from datetime import UTC, datetime
@@ -146,8 +146,13 @@ class Worker:
             if state.scope_type == "workspace":
                 scope_matches = scope_matches and (
                     snapshot.scope.workflow_id == state.workflow_id
-                    and snapshot.scope.workflow_run_id == state.workflow_run_id
+                    and snapshot.scope.execution_id == state.execution_id
                     and snapshot.scope.workflow_session_id == state.workflow_session_id
+                    and snapshot.scope.executor_role == state.executor_role
+                    and snapshot.scope.parent_run_id == state.parent_run_id
+                    and snapshot.scope.agent_id == state.agent_id
+                    and snapshot.scope.agent_version == state.agent_version
+                    and snapshot.scope.trigger_id == state.trigger_id
                     and snapshot.scope.target_id == state.target_id
                     and snapshot.scope.target_type == state.target_type
                 )

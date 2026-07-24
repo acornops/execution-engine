@@ -33,9 +33,10 @@ class RunRequest(BaseModel):
     target_id: Optional[str] = Field(default=None, examples=[EXAMPLE_TARGET_ID])
     target_type: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
     workflow_id: Optional[str] = None
-    workflow_run_id: Optional[str] = None
+    execution_id: Optional[str] = None
     workflow_session_id: Optional[str] = None
-    workflow_execution_id: Optional[str] = None
+    executor_role: Optional[Literal["coordinator", "specialist"]] = None
+    parent_run_id: Optional[str] = None
     attempt_number: Optional[int] = Field(default=None, ge=1)
     agent_id: Optional[str] = None
     agent_version: Optional[int] = None
@@ -52,16 +53,13 @@ class RunRequest(BaseModel):
                 raise ValueError("target scope requires target_id and target_type")
             return self
 
-        if self.agent_id and not self.workflow_id:
-            if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
-                raise ValueError("agent target binding requires both target_id and target_type")
-            return self
         missing = [
             name
             for name, value in (
                 ("workflow_id", self.workflow_id),
-                ("workflow_run_id", self.workflow_run_id),
+                ("execution_id", self.execution_id),
                 ("workflow_session_id", self.workflow_session_id),
+                ("executor_role", self.executor_role),
             )
             if not value
         ]
@@ -69,6 +67,12 @@ class RunRequest(BaseModel):
             raise ValueError(f"workspace workflow scope missing required fields: {', '.join(missing)}")
         if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
             raise ValueError("workflow target binding requires both target_id and target_type")
+        if self.executor_role == "coordinator" and (
+            self.parent_run_id or self.agent_id or self.agent_version is not None
+        ):
+            raise ValueError("coordinator workflow runs forbid parent and agent identity")
+        if self.executor_role == "specialist" and (not self.agent_id or self.agent_version is None):
+            raise ValueError("specialist workflow runs require agent identity and version")
         return self
 
     model_config = {
@@ -96,9 +100,10 @@ class Scope(BaseModel):
     target_id: Optional[str] = Field(default=None, examples=[EXAMPLE_TARGET_ID])
     target_type: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
     workflow_id: Optional[str] = None
-    workflow_run_id: Optional[str] = None
+    execution_id: Optional[str] = None
     workflow_session_id: Optional[str] = None
-    workflow_execution_id: Optional[str] = None
+    executor_role: Optional[Literal["coordinator", "specialist"]] = None
+    parent_run_id: Optional[str] = None
     attempt_number: Optional[int] = Field(default=None, ge=1)
     idempotency_key: Optional[str] = None
     agent_id: Optional[str] = None
@@ -115,16 +120,13 @@ class Scope(BaseModel):
                 raise ValueError("target scope requires target_id and target_type")
             return self
 
-        if self.agent_id and not self.workflow_id:
-            if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
-                raise ValueError("agent target binding requires both target_id and target_type")
-            return self
         missing = [
             name
             for name, value in (
                 ("workflow_id", self.workflow_id),
-                ("workflow_run_id", self.workflow_run_id),
+                ("execution_id", self.execution_id),
                 ("workflow_session_id", self.workflow_session_id),
+                ("executor_role", self.executor_role),
             )
             if not value
         ]
@@ -132,6 +134,12 @@ class Scope(BaseModel):
             raise ValueError(f"workspace workflow scope missing required fields: {', '.join(missing)}")
         if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
             raise ValueError("workflow target binding requires both target_id and target_type")
+        if self.executor_role == "coordinator" and (
+            self.parent_run_id or self.agent_id or self.agent_version is not None
+        ):
+            raise ValueError("coordinator workflow scope forbids parent and agent identity")
+        if self.executor_role == "specialist" and (not self.agent_id or self.agent_version is None):
+            raise ValueError("specialist workflow scope requires agent identity and version")
         return self
 
     model_config = {"extra": "forbid"}
@@ -465,8 +473,9 @@ class ToolCallRequest(BaseModel):
     target_id: Optional[str] = Field(default=None, examples=[EXAMPLE_TARGET_ID])
     target_type: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
     workflow_id: Optional[str] = None
-    workflow_run_id: Optional[str] = None
+    execution_id: Optional[str] = None
     workflow_session_id: Optional[str] = None
+    executor_role: Optional[Literal["coordinator", "specialist"]] = None
     agent_id: Optional[str] = None
     agent_version: Optional[int] = None
     trigger_id: Optional[str] = None
@@ -517,7 +526,7 @@ class ToolApproval(BaseModel):
     targetId: Optional[str] = None
     targetType: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
     workflowId: Optional[str] = None
-    workflowRunId: Optional[str] = None
+    executionId: Optional[str] = None
     workflowSessionId: Optional[str] = None
     workflowStepId: Optional[str] = None
     toolCallId: str

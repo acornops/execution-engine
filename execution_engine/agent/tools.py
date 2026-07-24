@@ -167,7 +167,7 @@ class ToolClientStub(ToolClient):
 
 
 class CoordinationToolClient(ToolClient):
-    """Intercept reserved Manager coordination functions before the MCP gateway."""
+    """Intercept reserved Workflow coordinator functions before the MCP gateway."""
 
     DELEGATE = "_acornops_delegate_specialist"
     AWAIT = "_acornops_await_delegations"
@@ -200,7 +200,15 @@ class CoordinationToolClient(ToolClient):
             })
         try:
             if tool_name == self.DELEGATE:
-                value = await self.orchestrator.create_delegation(self.run_id, arguments)
+                if not call_id:
+                    return _error_result({
+                        "code": "COORDINATION_TOOL_CALL_ID_REQUIRED",
+                        "message": "Delegation requires the model tool-call ID.",
+                    })
+                value = await self.orchestrator.create_delegation(
+                    self.run_id,
+                    {**arguments, "toolCallId": call_id},
+                )
             else:
                 value = await self.orchestrator.list_delegations(self.run_id)
             return {
@@ -321,8 +329,9 @@ class GatewayToolClient(ToolClient):
         tool_refs: Dict[str, Dict[str, str]] | None = None,
         scope_type: str = "target",
         workflow_id: str | None = None,
-        workflow_run_id: str | None = None,
+        execution_id: str | None = None,
         workflow_session_id: str | None = None,
+        executor_role: str | None = None,
         agent_id: str | None = None,
         agent_version: int | None = None,
         trigger_id: str | None = None,
@@ -336,8 +345,9 @@ class GatewayToolClient(ToolClient):
         self.run_id = run_id
         self.scope_type = scope_type
         self.workflow_id = workflow_id
-        self.workflow_run_id = workflow_run_id
+        self.execution_id = execution_id
         self.workflow_session_id = workflow_session_id
+        self.executor_role = executor_role
         self.agent_id = agent_id
         self.agent_version = agent_version
         self.trigger_id = trigger_id
@@ -404,8 +414,9 @@ class GatewayToolClient(ToolClient):
             target_id=self.target_id,
             target_type=self.target_type,
             workflow_id=self.workflow_id,
-            workflow_run_id=self.workflow_run_id,
+            execution_id=self.execution_id,
             workflow_session_id=self.workflow_session_id,
+            executor_role=self.executor_role,
             agent_id=self.agent_id,
             agent_version=self.agent_version,
             trigger_id=self.trigger_id,
@@ -420,8 +431,9 @@ class GatewayToolClient(ToolClient):
         if self.scope_type == "target":
             payload_json.pop("scope", None)
             payload_json.pop("workflow_id", None)
-            payload_json.pop("workflow_run_id", None)
+            payload_json.pop("execution_id", None)
             payload_json.pop("workflow_session_id", None)
+            payload_json.pop("executor_role", None)
             payload_json.pop("trigger_id", None)
             if self.agent_id is None:
                 payload_json.pop("agent_id", None)

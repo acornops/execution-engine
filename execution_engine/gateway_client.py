@@ -53,8 +53,9 @@ class GatewayLlmClient:
         max_output_tokens: int | None,
         scope_type: str = "target",
         workflow_id: str | None = None,
-        workflow_run_id: str | None = None,
+        execution_id: str | None = None,
         workflow_session_id: str | None = None,
+        executor_role: str | None = None,
         agent_id: str | None = None,
         agent_version: int | None = None,
         trigger_id: str | None = None,
@@ -99,10 +100,12 @@ class GatewayLlmClient:
             payload["target_type"] = target_type
         if workflow_id is not None:
             payload["workflow_id"] = workflow_id
-        if workflow_run_id is not None:
-            payload["workflow_run_id"] = workflow_run_id
+        if execution_id is not None:
+            payload["execution_id"] = execution_id
         if workflow_session_id is not None:
             payload["workflow_session_id"] = workflow_session_id
+        if executor_role is not None:
+            payload["executor_role"] = executor_role
         if agent_id is not None:
             payload["agent_id"] = agent_id
         if agent_version is not None:

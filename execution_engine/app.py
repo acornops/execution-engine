@@ -175,7 +175,7 @@ async def require_dispatch_token(authorization: str | None = Header(default=None
 )
 async def start_run(request: RunRequest) -> Response:
     """
-    Starts or resumes an agent run.
+    Starts or resumes an execution run.
 
     Args:
         request: The run parameters.
@@ -195,8 +195,10 @@ async def start_run(request: RunRequest) -> Response:
             session_id=request.session_id,
             scope_type=request.scope_type,
             workflow_id=request.workflow_id,
-            workflow_run_id=request.workflow_run_id,
+            execution_id=request.execution_id,
             workflow_session_id=request.workflow_session_id,
+            executor_role=request.executor_role,
+            parent_run_id=request.parent_run_id,
             agent_id=request.agent_id,
             agent_version=request.agent_version,
             trigger_id=request.trigger_id,
@@ -210,8 +212,10 @@ async def start_run(request: RunRequest) -> Response:
             message_id=request.message_id,
             scope_type=request.scope_type,
             workflow_id=request.workflow_id,
-            workflow_run_id=request.workflow_run_id,
+            execution_id=request.execution_id,
             workflow_session_id=request.workflow_session_id,
+            executor_role=request.executor_role,
+            parent_run_id=request.parent_run_id,
             agent_id=request.agent_id,
             agent_version=request.agent_version,
             trigger_id=request.trigger_id,

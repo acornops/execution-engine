@@ -1,4 +1,4 @@
-"""In-memory registry for tracking the state of agent runs."""
+"""In-memory registry for tracking execution run state."""
 
 import asyncio
 import uuid
@@ -34,9 +34,15 @@ RunKey = Tuple[
     Optional[str],
     Optional[str],
     Optional[str],
+    Optional[str],
+    Optional[str],
+    Optional[str],
+    Optional[int],
+    Optional[str],
 ]
 # (scope_type, workspace_id, target_id, target_type, session_id, message_id, run_id,
-#  workflow_id, workflow_run_id, workflow_session_id)
+#  workflow_id, execution_id, workflow_session_id, executor_role, parent_run_id,
+#  agent_id, agent_version, trigger_id)
 
 class RunState:
     """
@@ -69,8 +75,10 @@ class RunState:
         message_id: str,
         scope_type: str = "target",
         workflow_id: Optional[str] = None,
-        workflow_run_id: Optional[str] = None,
+        execution_id: Optional[str] = None,
         workflow_session_id: Optional[str] = None,
+        executor_role: Optional[str] = None,
+        parent_run_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         agent_version: Optional[int] = None,
         trigger_id: Optional[str] = None,
@@ -84,8 +92,10 @@ class RunState:
         self.run_id = run_id
         self.message_id = message_id
         self.workflow_id = workflow_id
-        self.workflow_run_id = workflow_run_id
+        self.execution_id = execution_id
         self.workflow_session_id = workflow_session_id
+        self.executor_role = executor_role
+        self.parent_run_id = parent_run_id
         self.agent_id = agent_id
         self.agent_version = agent_version
         self.trigger_id = trigger_id
@@ -113,13 +123,18 @@ class RunState:
             self.message_id,
             self.run_id,
             self.workflow_id,
-            self.workflow_run_id,
+            self.execution_id,
             self.workflow_session_id,
+            self.executor_role,
+            self.parent_run_id,
+            self.agent_id,
+            self.agent_version,
+            self.trigger_id,
         )
 
 class RunRegistry:
     """
-    Thread-safe registry and queue for managing agent runs.
+    Thread-safe registry and queue for managing execution runs.
 
     Uses an internal asyncio.Queue to manage concurrency and backpressure.
     """
@@ -154,8 +169,10 @@ class RunRegistry:
         message_id: str,
         scope_type: str = "target",
         workflow_id: Optional[str] = None,
-        workflow_run_id: Optional[str] = None,
+        execution_id: Optional[str] = None,
         workflow_session_id: Optional[str] = None,
+        executor_role: Optional[str] = None,
+        parent_run_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         agent_version: Optional[int] = None,
         trigger_id: Optional[str] = None,
@@ -186,8 +203,13 @@ class RunRegistry:
             message_id,
             run_id,
             workflow_id,
-            workflow_run_id,
+            execution_id,
             workflow_session_id,
+            executor_role,
+            parent_run_id,
+            agent_id,
+            agent_version,
+            trigger_id,
         )
         async with self._lock:
             if run_id in self._run_id_to_key:
@@ -208,8 +230,13 @@ class RunRegistry:
                         persisted.message_id,
                         persisted.run_id,
                         getattr(persisted, "workflow_id", None),
-                        getattr(persisted, "workflow_run_id", None),
+                        getattr(persisted, "execution_id", None),
                         getattr(persisted, "workflow_session_id", None),
+                        getattr(persisted, "executor_role", None),
+                        getattr(persisted, "parent_run_id", None),
+                        getattr(persisted, "agent_id", None),
+                        getattr(persisted, "agent_version", None),
+                        getattr(persisted, "trigger_id", None),
                     )
                     if persisted_key != key:
                         raise ValueError(f"Run ID {run_id} already exists with different identity")
@@ -227,8 +254,10 @@ class RunRegistry:
                 message_id,
                 scope_type=scope_type,
                 workflow_id=workflow_id,
-                workflow_run_id=workflow_run_id,
+                execution_id=execution_id,
                 workflow_session_id=workflow_session_id,
+                executor_role=executor_role,
+                parent_run_id=parent_run_id,
                 agent_id=agent_id,
                 agent_version=agent_version,
                 trigger_id=trigger_id,
@@ -243,8 +272,13 @@ class RunRegistry:
                     message_id=state.message_id,
                     scope_type=state.scope_type,
                     workflow_id=state.workflow_id,
-                    workflow_run_id=state.workflow_run_id,
+                    execution_id=state.execution_id,
                     workflow_session_id=state.workflow_session_id,
+                    executor_role=state.executor_role,
+                    parent_run_id=state.parent_run_id,
+                    agent_id=state.agent_id,
+                    agent_version=state.agent_version,
+                    trigger_id=state.trigger_id,
                     status=state.status.value,
                     created_at=state.created_at,
                 )
@@ -261,8 +295,13 @@ class RunRegistry:
                         persisted.message_id,
                         persisted.run_id,
                         getattr(persisted, "workflow_id", None),
-                        getattr(persisted, "workflow_run_id", None),
+                        getattr(persisted, "execution_id", None),
                         getattr(persisted, "workflow_session_id", None),
+                        getattr(persisted, "executor_role", None),
+                        getattr(persisted, "parent_run_id", None),
+                        getattr(persisted, "agent_id", None),
+                        getattr(persisted, "agent_version", None),
+                        getattr(persisted, "trigger_id", None),
                     )
                     if persisted_key != key:
                         raise ValueError(f"Run ID {run_id} already exists with different identity")
@@ -292,8 +331,10 @@ class RunRegistry:
             persisted.message_id,
             scope_type=getattr(persisted, "scope_type", "target"),
             workflow_id=getattr(persisted, "workflow_id", None),
-            workflow_run_id=getattr(persisted, "workflow_run_id", None),
+            execution_id=getattr(persisted, "execution_id", None),
             workflow_session_id=getattr(persisted, "workflow_session_id", None),
+            executor_role=getattr(persisted, "executor_role", None),
+            parent_run_id=getattr(persisted, "parent_run_id", None),
             agent_id=getattr(persisted, "agent_id", None),
             agent_version=getattr(persisted, "agent_version", None),
             trigger_id=getattr(persisted, "trigger_id", None),
@@ -357,8 +398,13 @@ class RunRegistry:
             message_id=state.message_id,
             scope_type=state.scope_type,
             workflow_id=state.workflow_id,
-            workflow_run_id=state.workflow_run_id,
+            execution_id=state.execution_id,
             workflow_session_id=state.workflow_session_id,
+            executor_role=state.executor_role,
+            parent_run_id=state.parent_run_id,
+            agent_id=state.agent_id,
+            agent_version=state.agent_version,
+            trigger_id=state.trigger_id,
             status=state.status.value,
             created_at=state.created_at,
             started_at=state.started_at,
@@ -434,8 +480,13 @@ class RunRegistry:
                 persisted.message_id,
                 scope_type=persisted.scope_type,
                 workflow_id=persisted.workflow_id,
-                workflow_run_id=persisted.workflow_run_id,
+                execution_id=persisted.execution_id,
                 workflow_session_id=persisted.workflow_session_id,
+                executor_role=persisted.executor_role,
+                parent_run_id=persisted.parent_run_id,
+                agent_id=persisted.agent_id,
+                agent_version=persisted.agent_version,
+                trigger_id=persisted.trigger_id,
             )
             state.status = RunStatus.FAILED
             state.created_at = persisted.created_at
