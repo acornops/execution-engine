@@ -20,7 +20,12 @@ import execution_engine.worker_fallbacks as worker_fallbacks_module
 from execution_engine.agent.tools import GatewayToolClient, PlatformToolClient, ToolClientStub
 from execution_engine.gateway_client import GatewayLlmClient
 from execution_engine.readiness import DependencyStatus
-from execution_engine.worker_tool_artifacts import persist_tool_result_artifact, tool_result_event_payload
+from execution_engine.worker_tool_artifacts import (
+    persist_tool_result_artifact,
+    tool_call_event_arguments,
+    tool_result_event_payload,
+    tool_result_event_summary,
+)
 from execution_engine.worker_tool_authority import (
     build_authorized_tool_routing,
     platform_function_mappings,
@@ -62,15 +67,20 @@ def test_tool_routing_requires_an_exact_authorized_reference():
 
 def test_platform_functions_require_all_snapshot_authorities():
     assert platform_function_mappings(
-        ["acornops_generate_pdf_report", "web_search"],
+        ["acornops_fetch", "acornops_generate_pdf_report", "web_search"],
         [
+            {"id": "http.fetch.get", "model_alias": "acornops_fetch"},
             {"id": "reports.pdf.generate", "model_alias": "acornops_generate_pdf_report"},
         ],
         [
+            {"name": "acornops_fetch", "input_schema": {"type": "object"}},
             {"name": "acornops_generate_pdf_report", "input_schema": {"type": "object"}},
             {"name": "web_search"},
         ],
-    ) == {"acornops_generate_pdf_report": "reports.pdf.generate"}
+    ) == {
+        "acornops_fetch": "http.fetch.get",
+        "acornops_generate_pdf_report": "reports.pdf.generate",
+    }
 
 
 @pytest.mark.parametrize(
@@ -162,6 +172,34 @@ async def test_platform_tool_client_calls_control_plane_with_stable_call_id():
     )
     assert result["is_error"] is False
     assert result["full_result"]["structuredContent"]["reportId"] == "report-1"
+
+
+@pytest.mark.asyncio
+async def test_fetch_uses_the_existing_platform_function_client():
+    orchestrator = MagicMock()
+    orchestrator.call_platform_native_tool = AsyncMock(return_value={
+        "content": [{"type": "text", "text": "{\"status\": 200}"}],
+        "structuredContent": {"status": 200, "data": {"ok": True}},
+        "isError": False,
+    })
+    client = PlatformToolClient(
+        ToolClientStub(), orchestrator, "run-1",
+        {"acornops_fetch": "http.fetch.get"},
+    )
+
+    result = await client.call_tool(
+        "acornops_fetch",
+        {"url": "https://status.example.com/api/health"},
+        call_id="call-fetch-1",
+    )
+
+    orchestrator.call_platform_native_tool.assert_awaited_once_with(
+        "run-1",
+        "http.fetch.get",
+        {"url": "https://status.example.com/api/health"},
+        call_id="call-fetch-1",
+    )
+    assert result["is_error"] is False
 
 
 @pytest.mark.asyncio
@@ -1094,6 +1132,49 @@ async def test_artifact_failure_keeps_full_result_out_of_durable_event():
     assert payload["artifactUnavailable"] is True
     assert "full_result" not in payload
     assert "must-not-enter-events" not in str(payload)
+
+
+def test_fetch_event_omits_url_query_and_response_body():
+    chunk = {
+        "call_id": "call-fetch-1",
+        "tool": "acornops_fetch",
+        "result": {
+            "content": [{"type": "text", "text": "secret response body"}],
+            "structuredContent": {
+                "url": "https://api.example.com/search?secret=query-value",
+                "status": 200,
+                "contentType": "application/json",
+                "data": {"secret": "response body"},
+                "responseSizeBytes": 42,
+                "retrievedAt": "2026-07-24T00:00:00.000Z",
+            },
+            "isError": False,
+        },
+        "full_result": {"secret": "artifact body"},
+        "context_meta": {"context_bytes": 200},
+        "artifact_eligible": False,
+        "is_error": False,
+    }
+
+    payload = tool_result_event_payload(chunk, None, False)
+
+    assert payload["result"] == {
+        "status": 200,
+        "contentType": "application/json",
+        "responseSizeBytes": 42,
+        "retrievedAt": "2026-07-24T00:00:00.000Z",
+        "untrustedExternalData": True,
+    }
+    assert "query-value" not in str(payload)
+    assert "response body" not in str(payload)
+
+    assert tool_call_event_arguments(
+        "acornops_fetch",
+        {"url": "https://api.example.com/search?secret=query-value"},
+    ) == {"url": "[redacted]"}
+    fallback_result = tool_result_event_summary("acornops_fetch", chunk["result"])
+    assert "query-value" not in str(fallback_result)
+    assert "response body" not in str(fallback_result)
 
 
 @pytest.mark.asyncio

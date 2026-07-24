@@ -55,6 +55,7 @@
       "toolCallCompletedArtifactFields": ["id", "expires_at", "sha256", "uncompressed_bytes", "compressed_bytes", "content_type"],
       "toolCallCompletedResultMaxBytes": 12288,
       "platformNativeToolRouting": "A platform function is exposed under its provider-safe model_alias only when that alias intersects bootstrap platform_functions, allowed_tools, and tool_specs. Execution routes the alias back to the canonical control-plane ID with the stable tool-call ID. Missing, duplicate, or invalid mappings fail closed. native_tools and gateway JWT allowed_native_tools contain provider-native tools only; target MCP tools remain gateway/target-adapter owned.",
+      "fetchRouting": "http.fetch.get is exposed as acornops_fetch and dispatches through the existing platform-function client to the control plane; execution-engine never performs the external HTTP request. The platform-function read deadline exceeds Fetch's control-plane-owned 15-second deadline so timeout outcomes remain producer-authoritative. Durable tool-start events redact the URL, and completion or fallback events retain only status, content type, response size, retrieval time, and the untrusted-data marker, never the URL, query, or response body.",
       "commitStatusValues": ["completed", "failed", "cancelled"],
       "commitAssistantMessageFields": ["content", "format"],
       "commitUsageFields": ["input_tokens", "output_tokens", "tool_calls", "reasoning_tokens?"],

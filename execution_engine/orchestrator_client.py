@@ -33,6 +33,7 @@ from execution_engine.util.metrics import (
 )
 
 INTERNAL_CONTROL_PLANE_PREFIX = "/internal/v1"
+PLATFORM_NATIVE_TOOL_READ_TIMEOUT_SECONDS = 20.0
 
 
 def _retryable_orchestrator_error(exc: BaseException) -> bool:
@@ -244,6 +245,12 @@ class OrchestratorClient:
             response = await self.client.post(
                 url,
                 json={"toolCallId": call_id, "arguments": arguments},
+                timeout=httpx.Timeout(
+                    connect=5.0,
+                    read=PLATFORM_NATIVE_TOOL_READ_TIMEOUT_SECONDS,
+                    write=10.0,
+                    pool=5.0,
+                ),
             )
             response.raise_for_status()
             orchestrator_requests_total.labels(endpoint="platform_native_tool", result="success").inc()
