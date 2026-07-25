@@ -6,7 +6,7 @@ from typing import Any
 from execution_engine.agent.tool_context import json_bytes
 
 MAX_VALIDATION_ERRORS = 12
-WORKLOAD_PATCH_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "CronJob"}
+PATCH_TOOLS = {"patch_workload", "patch_resource", "patch_configmap"}
 
 
 def tool_schema_map(tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -66,15 +66,16 @@ def remediation_preapproval_validation(
     evidence_entries: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """Require patch targets to match a prior trusted remediation projection."""
-    if tool != "patch_resource":
+    if tool not in PATCH_TOOLS:
         return None
 
-    target_kind = arguments.get("kind")
+    target_kind = "ConfigMap" if tool == "patch_configmap" else arguments.get("kind")
     target = {
         "kind": target_kind,
         "namespace": arguments.get("namespace"),
         "name": arguments.get("name"),
         "uid": arguments.get("expected_uid"),
+        "resourceVersion": arguments.get("expected_resource_version"),
     }
     matched_context: dict[str, Any] | None = None
     seen_keys: set[str] = set()
@@ -95,7 +96,7 @@ def remediation_preapproval_validation(
         ownership = data.get("ownership") if isinstance(data, dict) else None
         if not _target_matches(remediation_target, target):
             continue
-        if target_kind in WORKLOAD_PATCH_KINDS:
+        if tool == "patch_workload":
             if not (
                 isinstance(resource, dict)
                 and resource.get("kind") == "Pod"
@@ -116,13 +117,16 @@ def remediation_preapproval_validation(
             "message": (
                 "target must match the UID-bound remediationTarget from a successful Pod get_resource ownership "
                 "resolution in this run"
-                if target_kind in WORKLOAD_PATCH_KINDS
+                if tool == "patch_workload"
                 else "target must match a successful get_resource remediationTarget in this run"
             ),
         })
     else:
         remediation_target = matched_context.get("remediationTarget")
-        details.extend(_image_precondition_evidence_errors(arguments, remediation_target))
+        if tool == "patch_workload":
+            details.extend(_workload_precondition_evidence_errors(arguments, remediation_target))
+        if tool == "patch_configmap":
+            details.extend(_configmap_precondition_evidence_errors(arguments, matched_context))
 
     if not details:
         return None
@@ -134,8 +138,8 @@ def remediation_preapproval_validation(
         "data": {
             "code": "REMEDIATION_TARGET_NOT_RESOLVED",
             "message": (
-                "Inspect the exact failing Pod with get_resource and copy its complete remediationTarget identity "
-                "and current container image into patch_resource. Do not inspect or infer a controller by name."
+                "Inspect the exact target with get_resource and copy its UID, resourceVersion, and safe field "
+                "preconditions into the requested patch tool. Do not infer target state."
             ),
             "validationDetails": details,
         },
@@ -149,7 +153,7 @@ def _target_matches(value: Any, target: dict[str, Any]) -> bool:
     return isinstance(value, dict) and all(value.get(key) == expected for key, expected in target.items())
 
 
-def _image_precondition_evidence_errors(
+def _workload_precondition_evidence_errors(
     arguments: dict[str, Any], remediation_target: Any
 ) -> list[dict[str, str]]:
     """Ensure image preconditions are copied from the resolved target, not invented."""
@@ -159,6 +163,14 @@ def _image_precondition_evidence_errors(
     init_containers = remediation_target.get("initContainers")
     container_items = containers if isinstance(containers, list) else []
     init_container_items = init_containers if isinstance(init_containers, list) else []
+    current_containers = {
+        ("container", item.get("name")): item
+        for item in container_items if isinstance(item, dict)
+    }
+    current_containers.update({
+        ("init_container", item.get("name")): item
+        for item in init_container_items if isinstance(item, dict)
+    })
     current_images = {
         ("container", item.get("name")): item.get("image")
         for item in container_items if isinstance(item, dict)
@@ -169,19 +181,89 @@ def _image_precondition_evidence_errors(
     })
     errors: list[dict[str, str]] = []
     changes = arguments.get("changes")
-    for index, change in enumerate(changes if isinstance(changes, list) else []):
-        if not isinstance(change, dict) or change.get("type") != "set_image":
+    change_items = changes if isinstance(changes, list) else []
+    if (
+        any(isinstance(change, dict) and change.get("type") == "set_env" for change in change_items)
+        and arguments.get("confirm_non_secret_data") is not True
+    ):
+        errors.append({
+            "path": "$.confirm_non_secret_data",
+            "message": "literal environment changes require explicit non-secret data confirmation",
+        })
+    for index, change in enumerate(change_items):
+        if not isinstance(change, dict):
+            continue
+        if change.get("type") not in {"set_image", "set_env", "set_env_from_configmap", "remove_env"}:
             continue
         key = (change.get("container_type"), change.get("container"))
-        if key not in current_images:
+        if key not in current_containers:
             errors.append({
                 "path": f"$.changes[{index}].container",
                 "message": "container must exist in the resolved remediationTarget",
             })
-        elif current_images[key] != change.get("expected_image"):
+            continue
+        if change.get("type") == "set_image" and current_images[key] != change.get("expected_image"):
             errors.append({
                 "path": f"$.changes[{index}].expected_image",
                 "message": "expected image must equal the current image in the resolved remediationTarget",
+            })
+        if change.get("type") in {"set_env", "set_env_from_configmap", "remove_env"}:
+            env_items = current_containers[key].get("env")
+            env_items = env_items if isinstance(env_items, list) else []
+            matching_env = [
+                item for item in env_items
+                if isinstance(item, dict) and item.get("name") == change.get("name")
+            ]
+            if len(matching_env) > 1:
+                errors.append({
+                    "path": f"$.changes[{index}].name",
+                    "message": "environment name must have one unambiguous current descriptor",
+                })
+                continue
+            env = matching_env[0] if matching_env else None
+            actual_source = env.get("source") if isinstance(env, dict) else "absent"
+            if actual_source != change.get("expected_source"):
+                errors.append({
+                    "path": f"$.changes[{index}].expected_source",
+                    "message": "expected source must match the current environment descriptor",
+                })
+    return errors
+
+
+def _configmap_precondition_evidence_errors(
+    arguments: dict[str, Any], context: dict[str, Any]
+) -> list[dict[str, str]]:
+    """Ensure ConfigMap key-presence preconditions are copied from direct evidence."""
+    configuration = context.get("configuration")
+    keys = configuration.get("configMapKeys") if isinstance(configuration, dict) else []
+    present = {
+        item.get("key")
+        for item in keys if isinstance(item, dict) and isinstance(item.get("key"), str)
+    }
+    errors: list[dict[str, str]] = []
+    changes = arguments.get("changes")
+    change_items = changes if isinstance(changes, list) else []
+    if (
+        any(isinstance(change, dict) and change.get("type") == "set_key" for change in change_items)
+        and arguments.get("confirm_non_secret_data") is not True
+    ):
+        errors.append({
+            "path": "$.confirm_non_secret_data",
+            "message": "literal ConfigMap changes require explicit non-secret data confirmation",
+        })
+    for index, change in enumerate(change_items):
+        if not isinstance(change, dict):
+            continue
+        is_present = change.get("key") in present
+        if change.get("type") == "set_key" and is_present != change.get("expected_present"):
+            errors.append({
+                "path": f"$.changes[{index}].expected_present",
+                "message": "expected presence must match the inspected ConfigMap key inventory",
+            })
+        if change.get("type") == "remove_key" and not is_present:
+            errors.append({
+                "path": f"$.changes[{index}].key",
+                "message": "ConfigMap key must exist in the inspected key inventory",
             })
     return errors
 

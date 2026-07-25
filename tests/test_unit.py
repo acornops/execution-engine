@@ -484,7 +484,7 @@ def test_worker_sanitizes_untrusted_tool_specs_before_llm_use():
 def test_worker_keeps_deep_tool_schemas_valid_without_injecting_none():
     sanitized = sanitize_tool_spec_for_llm(
         {
-            "name": "patch_resource",
+            "name": "patch_workload",
             "description": "Apply structured changes.",
             "input_schema": {
                 "type": "object",
@@ -2466,7 +2466,7 @@ async def test_gateway_tool_client_preserves_structured_argument_validation_erro
             json={
                 "detail": {
                     "code": "TOOL_ARGS_INVALID",
-                    "message": "Invalid arguments for tool patch_resource: 'image' is a required property",
+                    "message": "Invalid arguments for tool patch_workload: 'image' is a required property",
                 }
             },
             request=httpx.Request("POST", url),
@@ -2479,12 +2479,12 @@ async def test_gateway_tool_client_preserves_structured_argument_validation_erro
         target_id=EXAMPLE_TARGET_ID,
         target_type="kubernetes",
         run_id="run-1",
-        allowed_tools=["patch_resource"],
+        allowed_tools=["patch_workload"],
     )
     tool_client._post_bounded = reject_post
     try:
         result = await tool_client.call_tool(
-            "patch_resource",
+            "patch_workload",
             {"kind": "Deployment", "name": "acornops-demo-unhealthy"},
             call_id="patch-1",
         )
@@ -2494,7 +2494,7 @@ async def test_gateway_tool_client_preserves_structured_argument_validation_erro
     assert result["full_result"] == {
             "code": "TOOL_ARGS_INVALID",
             "message": (
-                "Tool gateway rejected the call: Invalid arguments for tool patch_resource: "
+                "Tool gateway rejected the call: Invalid arguments for tool patch_workload: "
                 "'image' is a required property"
             ),
     }
@@ -3116,7 +3116,7 @@ async def test_react_engine_stops_after_unknown_write_outcome_without_approval()
         }],
     }
     llm_client = FakeStreamingLlmClient(streams=[[
-        {"type": "tool_call", "call_id": "call-1", "tool": "patch_resource", "arguments": arguments},
+        {"type": "tool_call", "call_id": "call-1", "tool": "patch_workload", "arguments": arguments},
     ]])
     tool_client = FakeToolClient({
         "full_result": {"code": "TOOL_TIMEOUT", "message": "Timed out", "outcome": "unknown"},
@@ -3128,12 +3128,12 @@ async def test_react_engine_stops_after_unknown_write_outcome_without_approval()
     engine = ReActAgentEngine(
         llm_client, tool_client, react_policy(max_steps=2, max_tool_calls=2),
         react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1702"),
-        tool_capabilities={"patch_resource": "write"}, confirmation_required_for_write=False,
+        tool_capabilities={"patch_workload": "write"}, confirmation_required_for_write=False,
     )
 
     chunks = [chunk async for chunk in engine.run(
         [Message(role="user", content="Patch the resource.")], llm_config(),
-        [{"name": "patch_resource"}], asyncio.Event(),
+        [{"name": "patch_workload"}], asyncio.Event(),
         continuation_state={
             "llm_messages": [{"role": "user", "content": "Patch the resource."}],
             "evidence_ledger": [{
@@ -3327,10 +3327,10 @@ async def test_react_engine_rejects_malformed_write_before_approval_then_self_co
             "type": "tool_call", "call_id": "inspect", "tool": "get_resource",
             "arguments": {"kind": "Pod", "namespace": "demo", "name": "api-broken"},
         }],
-        [{"type": "tool_call", "call_id": "bad-1", "tool": "patch_resource", "arguments": invalid}],
-        [{"type": "tool_call", "call_id": "bad-2", "tool": "patch_resource", "arguments": invalid}],
-        [{"type": "tool_call", "call_id": "bad-3", "tool": "patch_resource", "arguments": invalid}],
-        [{"type": "tool_call", "call_id": "good", "tool": "patch_resource", "arguments": corrected}],
+        [{"type": "tool_call", "call_id": "bad-1", "tool": "patch_workload", "arguments": invalid}],
+        [{"type": "tool_call", "call_id": "bad-2", "tool": "patch_workload", "arguments": invalid}],
+        [{"type": "tool_call", "call_id": "bad-3", "tool": "patch_workload", "arguments": invalid}],
+        [{"type": "tool_call", "call_id": "good", "tool": "patch_workload", "arguments": corrected}],
     ])
     pod_context = {
         "schemaVersion": "acornops.model-context.v1", "tool": "get_resource", "status": "success",
@@ -3362,7 +3362,7 @@ async def test_react_engine_rejects_malformed_write_before_approval_then_self_co
         llm_client, tool_client,
         react_policy(max_steps=6, max_tool_calls=5, max_duplicate_tool_calls=2),
         react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1701"),
-        tool_capabilities={"patch_resource": "write"}, confirmation_required_for_write=True,
+        tool_capabilities={"patch_workload": "write"}, confirmation_required_for_write=True,
     )
     schema = {
         "type": "object", "required": ["namespace", "expected_uid", "changes"],
@@ -3380,12 +3380,12 @@ async def test_react_engine_rejects_malformed_write_before_approval_then_self_co
 
     chunks = [chunk async for chunk in engine.run(
         [Message(role="user", content="Repair the image.")], llm_config(),
-        [{"name": "get_resource"}, {"name": "patch_resource", "input_schema": schema}], asyncio.Event(),
+        [{"name": "get_resource"}, {"name": "patch_workload", "input_schema": schema}], asyncio.Event(),
     )]
 
     invalid_results = [
         chunk for chunk in chunks
-        if chunk["type"] == "tool_result" and chunk["tool"] == "patch_resource"
+        if chunk["type"] == "tool_result" and chunk["tool"] == "patch_workload"
     ]
     interrupts = [chunk for chunk in chunks if chunk["type"] == "approval_interrupt"]
     assert len(invalid_results) == 3
@@ -3410,7 +3410,7 @@ async def test_react_engine_rejects_patch_without_resolved_pod_evidence_before_a
     engine = ReActAgentEngine(
         FakeStreamingLlmClient([
             [{
-                "type": "tool_call", "call_id": "guessed", "tool": "patch_resource", "arguments": arguments,
+                "type": "tool_call", "call_id": "guessed", "tool": "patch_workload", "arguments": arguments,
             }],
             [
                 {"type": "delta", "text": "I could not authorize the guessed target."},
@@ -3420,14 +3420,14 @@ async def test_react_engine_rejects_patch_without_resolved_pod_evidence_before_a
         FakeToolClient(),
         react_policy(max_steps=2, max_tool_calls=1),
         react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1702"),
-        tool_capabilities={"patch_resource": "write"},
+        tool_capabilities={"patch_workload": "write"},
         confirmation_required_for_write=True,
     )
 
     chunks = [chunk async for chunk in engine.run(
         [Message(role="user", content="Repair the image.")],
         llm_config(),
-        [{"name": "patch_resource"}],
+        [{"name": "patch_workload"}],
         asyncio.Event(),
     )]
 
@@ -3465,7 +3465,7 @@ async def test_react_engine_records_verified_image_patch_after_fresh_read(monkey
         "omissions": [],
     }
     write_context = {
-        "schemaVersion": "acornops.model-context.v1", "tool": "patch_resource", "status": "success",
+        "schemaVersion": "acornops.model-context.v1", "tool": "patch_workload", "status": "success",
         "summary": "Image patched.",
         "data": {
             "operationId": "operation-1",
@@ -3513,7 +3513,7 @@ async def test_react_engine_records_verified_image_patch_after_fresh_read(monkey
             "type": "tool_call", "call_id": "read-pod", "tool": "get_resource",
             "arguments": {"kind": "Pod", "namespace": "demo", "name": "api-broken"},
         }],
-        [{"type": "tool_call", "call_id": "patch", "tool": "patch_resource", "arguments": arguments}],
+        [{"type": "tool_call", "call_id": "patch", "tool": "patch_workload", "arguments": arguments}],
         [{
             "type": "tool_call", "call_id": "verify", "tool": "get_resource",
             "arguments": {"kind": "Deployment", "namespace": "demo", "name": "api"},
@@ -3527,17 +3527,17 @@ async def test_react_engine_records_verified_image_patch_after_fresh_read(monkey
         FakeStreamingLlmClient(streams), SequentialToolClient(),
         react_policy(max_steps=5, max_tool_calls=3),
         react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1703"),
-        tool_capabilities={"get_resource": "read", "patch_resource": "write"},
+        tool_capabilities={"get_resource": "read", "patch_workload": "write"},
     )
 
     _ = [chunk async for chunk in engine.run(
         [Message(role="user", content="Repair the image.")],
         llm_config(),
-        [{"name": "get_resource"}, {"name": "patch_resource"}],
+        [{"name": "get_resource"}, {"name": "patch_workload"}],
         asyncio.Event(),
     )]
 
-    assert outcomes == [("patch_resource", "verified")]
+    assert outcomes == [("patch_workload", "verified")]
 
 
 def test_approval_summary_describes_agentv_service_restart_preconditions():
@@ -3585,7 +3585,7 @@ def test_approval_summary_surfaces_scale_safety_confirmations():
 
 def test_approval_summary_describes_structured_resource_patch_risk():
     assert build_approval_summary(
-        "patch_resource",
+        "patch_workload",
         {
             "kind": "Deployment",
             "namespace": "demo",
@@ -3624,9 +3624,41 @@ def test_approval_summary_warns_for_service_selector_changes():
     assert summary == "Update (can redirect Service traffic) Service demo/api: set Service selector app=api."
 
 
+def test_approval_summary_redacts_workload_env_and_configmap_values():
+    env_summary = build_approval_summary(
+        "patch_workload",
+        {
+            "kind": "Deployment",
+            "namespace": "demo",
+            "name": "api",
+            "changes": [{
+                "type": "set_env",
+                "container": "api",
+                "name": "LOG_LEVEL",
+                "value": "debug",
+            }],
+        },
+    )
+    config_summary = build_approval_summary(
+        "patch_configmap",
+        {
+            "namespace": "demo",
+            "name": "api-config",
+            "changes": [{"type": "set_key", "key": "LOG_LEVEL", "value": "debug"}],
+        },
+    )
+
+    assert "debug" not in env_summary
+    assert "non-secret environment variable LOG_LEVEL" in env_summary
+    assert "debug" not in config_summary
+    assert config_summary == (
+        "Update (does not restart consumers) ConfigMap demo/api-config: set non-secret ConfigMap key LOG_LEVEL."
+    )
+
+
 def test_approval_summary_keeps_patch_warning_before_truncated_details():
     summary = build_approval_summary(
-        "patch_resource",
+        "patch_workload",
         {
             "kind": "Deployment",
             "namespace": "demo",
@@ -3645,7 +3677,7 @@ def test_approval_summary_keeps_patch_warning_before_truncated_details():
 
 def test_approval_summary_removes_unicode_format_controls():
     summary = build_approval_summary(
-        "patch_resource",
+        "patch_workload",
         {
             "kind": "Deployment",
             "namespace": "demo",
@@ -3664,7 +3696,7 @@ def test_approval_summary_removes_unicode_format_controls():
 
 def test_approval_summary_describes_cronjob_template_effect_precisely():
     summary = build_approval_summary(
-        "patch_resource",
+        "patch_workload",
         {
             "kind": "CronJob",
             "namespace": "demo",
@@ -3681,7 +3713,7 @@ def test_approval_summary_bounds_unvalidated_patch_change_analysis():
                for index in range(100)]
     changes[10] = {"type": "set_service_selector", "key": "app", "value": "api"}
     summary = build_approval_summary(
-        "patch_resource",
+        "patch_workload",
         {"kind": "Deployment", "namespace": "demo", "name": "api", "changes": changes},
     )
     assert "and 97 more" in summary

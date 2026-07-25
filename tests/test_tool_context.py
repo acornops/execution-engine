@@ -15,7 +15,7 @@ from execution_engine.agent.tool_context import (
 
 
 def test_approval_continuation_preserves_pending_verification_without_synthetic_evidence_message():
-    pending = [{"tool": "patch_resource", "operation_id": "operation-1"}]
+    pending = [{"tool": "patch_workload", "operation_id": "operation-1"}]
     state = build_tool_continuation_state(
         llm_messages=[
             {"role": "user", "content": "Fix the image."},
@@ -32,7 +32,7 @@ def test_approval_continuation_preserves_pending_verification_without_synthetic_
         pending_verifications=pending,
         loaded_skill_refs=set(),
         loaded_skill_bytes=0,
-        pending_tool_call={"tool": "patch_resource"},
+        pending_tool_call={"tool": "patch_workload"},
     )
 
     assert state["pending_verifications"] == pending
@@ -142,7 +142,7 @@ def test_get_resource_observation_is_protected_as_latest_verification():
 
 def test_evidence_ledger_preserves_protected_write_receipt_when_evicting():
     protected = {
-        "key": "patch:1", "tool": "patch_resource", "arguments": {},
+        "key": "patch:1", "tool": "patch_workload", "arguments": {},
         "is_error": False, "protected": True, "protection": "write_receipt",
         "context": {"data": {"operationId": "op-1", "payload": "p" * 10000}},
     }

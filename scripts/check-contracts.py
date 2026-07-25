@@ -52,8 +52,16 @@ def expect_in(content: str, needle: str, message: str) -> None:
 expect_in(README, "[`docs/contracts/README.md`](docs/contracts/README.md)", "README contract link")
 expect_in(README, "[`docs/contracts/manifest.json`](docs/contracts/manifest.json)", "README manifest link")
 expect(MANIFEST["repo"] == "execution-engine", "Manifest repo")
-expect_in(DOC, "`patch_resource` approvals", "Structured patch approval contract")
-expect_in(APPROVAL_SUMMARY_SOURCE, 'clean_tool_name == "patch_resource"', "Structured patch approval implementation")
+expect_in(
+    DOC,
+    "`patch_workload`, `patch_resource`, and `patch_configmap` approvals",
+    "Structured patch approval contract",
+)
+expect_in(
+    APPROVAL_SUMMARY_SOURCE,
+    '"patch_workload", "patch_resource", "patch_configmap"',
+    "Structured patch approval implementation",
+)
 
 for heading in (
     "# Execution-Engine Contracts",

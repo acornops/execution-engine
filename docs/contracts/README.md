@@ -54,11 +54,18 @@ The execution engine owns run execution and talks only to the control plane and 
 - Run dispatch accepts idempotent replays, rejects scope mismatches, and reports local overload without widening run ownership.
 - Workspace workflow runs use explicit workspace scope fields; they must not fake a target.
 - `WRITE_TOOL_OUTCOME_UNKNOWN` is fail-closed: do not retry a write after the approval execution state is already executing or unknown.
-- `patch_resource` approvals summarize semantic field intent and explicitly
-  surface workload rollout, future CronJob, and Service-routing impact.
-- Workload `patch_resource` approval is fail-closed unless its exact UID and
-  image preconditions match a successful Pod ownership projection already in
-  the run evidence ledger. Direct controller-name reads do not authorize it.
+- `patch_workload`, `patch_resource`, and `patch_configmap` approvals summarize
+  semantic field intent without echoing literal environment or ConfigMap
+  values. They explicitly surface rollout, future CronJob, Service-routing, and
+  ConfigMap consumer-activation impact. Literal environment changes must carry
+  the caller's explicit `confirm_non_secret_data=true` assertion before the
+  request can proceed to approval; AgentK applies the same check to literal
+  environment and ConfigMap writes.
+- Workload `patch_workload` approval is fail-closed unless its exact UID,
+  resource version, image, and environment-source preconditions match a
+  successful Pod ownership projection already in the run evidence ledger.
+  Service, Ingress, and ConfigMap patches require direct resource evidence.
+  Direct controller-name reads do not authorize workload patches.
 
 ## LLM-Gateway Boundary Notes
 

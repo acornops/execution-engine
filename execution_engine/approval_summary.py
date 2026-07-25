@@ -53,6 +53,24 @@ def _patch_change_summary(change: Any) -> tuple[str, bool, bool]:
         before = _clean_text(change.get("expected_image"))
         after = _clean_text(change.get("image"))
         return (f"change {container} image from {before} to {after}", True, False)
+    if change_type == "set_env":
+        container = _clean_text(change.get("container")) or "selected container"
+        name = _clean_text(change.get("name")) or "environment variable"
+        return (f"set non-secret environment variable {name} on {container}", True, False)
+    if change_type == "set_env_from_configmap":
+        container = _clean_text(change.get("container")) or "selected container"
+        name = _clean_text(change.get("name")) or "environment variable"
+        config_map = _clean_text(change.get("config_map")) or "ConfigMap"
+        key_name = _clean_text(change.get("key")) or "selected key"
+        return (f"set {name} on {container} from ConfigMap {config_map}/{key_name}", True, False)
+    if change_type == "remove_env":
+        container = _clean_text(change.get("container")) or "selected container"
+        name = _clean_text(change.get("name")) or "environment variable"
+        return (f"remove environment variable {name} from {container}", True, False)
+    if change_type == "set_key":
+        return (f"set non-secret ConfigMap key {key}", False, False)
+    if change_type == "remove_key":
+        return (f"remove ConfigMap key {key}", False, False)
     if change_type == "set_label":
         return (f"set {scope} label {key}={_clean_text(change.get('value'))}", scope == "pod-template", False)
     if change_type == "remove_label":
@@ -99,8 +117,9 @@ def build_approval_summary(tool_name: str, arguments: Dict[str, Any]) -> str:
             return _cap_summary(f"Scale{prefix} {target} to {replicas} replicas.")
         return _cap_summary(f"Scale {target}.")
 
-    if clean_tool_name == "patch_resource":
-        target = _target_label(args, "resource")
+    if clean_tool_name in {"patch_workload", "patch_resource", "patch_configmap"}:
+        default_kind = "ConfigMap" if clean_tool_name == "patch_configmap" else "resource"
+        target = _target_label(args, default_kind)
         raw_changes = args.get("changes")
         change_count = len(raw_changes) if isinstance(raw_changes, list) else 0
         changes = raw_changes[:10] if isinstance(raw_changes, list) else []
@@ -114,6 +133,8 @@ def build_approval_summary(tool_name: str, arguments: Dict[str, Any]) -> str:
             warnings.append("affects future Jobs" if args.get("kind") == "CronJob" else "triggers a rollout")
         if any(item[2] for item in summaries):
             warnings.append("can redirect Service traffic")
+        if clean_tool_name == "patch_configmap":
+            warnings.append("does not restart consumers")
         prefix = f" ({'; '.join(warnings)})" if warnings else ""
         return _cap_summary(f"Update{prefix} {target}: {detail}.")
 

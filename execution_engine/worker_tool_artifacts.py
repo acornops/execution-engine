@@ -18,9 +18,26 @@ FETCH_MODEL_ALIAS = "acornops_fetch"
 
 
 def tool_call_event_arguments(tool_name: object, arguments: object) -> object:
-    """Remove Fetch URL paths and queries from durable tool-call events."""
+    """Remove sensitive or high-detail values from durable tool-call events."""
     if str(tool_name) == FETCH_MODEL_ALIAS:
         return {"url": "[redacted]"}
+    if str(tool_name) in {"patch_workload", "patch_configmap"} and isinstance(arguments, dict):
+        sanitized = dict(arguments)
+        changes = arguments.get("changes")
+        if isinstance(changes, list):
+            sanitized["changes"] = [
+                {
+                    **change,
+                    **(
+                        {"value": "[redacted]"}
+                        if isinstance(change, dict) and change.get("type") in {"set_env", "set_key"}
+                        else {}
+                    ),
+                }
+                if isinstance(change, dict) else change
+                for change in changes
+            ]
+        return sanitized
     return arguments
 
 

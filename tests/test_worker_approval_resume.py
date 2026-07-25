@@ -14,7 +14,7 @@ def approval(**updates: Any) -> ToolApproval:
         "runId": "run-1",
         "workspaceId": "workspace-1",
         "toolCallId": "call-1",
-        "toolName": "patch_resource",
+        "toolName": "patch_workload",
         "arguments": {"name": "api"},
         "status": "approved",
         "executionStatus": "not_started",
@@ -29,13 +29,13 @@ def approval(**updates: Any) -> ToolApproval:
     [
         (
             approval(executionStatus="succeeded", toolResult={"patched": True}),
-            ["patch_resource"],
+            ["patch_workload"],
             None,
             False,
         ),
         (
             approval(executionStatus="executing"),
-            ["patch_resource"],
+            ["patch_workload"],
             "WRITE_TOOL_OUTCOME_UNKNOWN",
             True,
         ),
@@ -47,13 +47,13 @@ def approval(**updates: Any) -> ToolApproval:
         ),
         (
             approval(status="rejected"),
-            ["patch_resource"],
+            ["patch_workload"],
             "TOOL_APPROVAL_REJECTED",
             True,
         ),
         (
             approval(status="expired"),
-            ["patch_resource"],
+            ["patch_workload"],
             "TOOL_APPROVAL_EXPIRED",
             True,
         ),
@@ -68,10 +68,10 @@ def test_terminal_approval_resume_never_requires_dispatch(
     result = build_terminal_approval_resume(
         approval_value,
         "call-1",
-        "patch_resource",
+        "patch_workload",
         {"name": "api"},
         allowed_tools,
-        {"patch_resource": "write"},
+        {"patch_workload": "write"},
     )
 
     assert result is not None
@@ -86,8 +86,8 @@ def test_not_started_approved_write_still_requires_claim_and_dispatch() -> None:
     assert build_terminal_approval_resume(
         approval(),
         "call-1",
-        "patch_resource",
+        "patch_workload",
         {"name": "api"},
-        ["patch_resource"],
-        {"patch_resource": "write"},
+        ["patch_workload"],
+        {"patch_workload": "write"},
     ) is None

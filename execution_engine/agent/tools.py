@@ -18,7 +18,9 @@ from execution_engine.util.metrics import (
     tool_result_normalizations_total,
 )
 
-_REMEDIATION_WRITE_TOOLS = {"patch_resource", "restart_workload", "scale_workload"}
+_REMEDIATION_WRITE_TOOLS = {
+    "patch_workload", "patch_resource", "patch_configmap", "restart_workload", "scale_workload",
+}
 _OWNERSHIP_STATUSES = {"resolved", "partial", "unsupported", "unowned"}
 _CONTROLLER_KINDS = {"Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "ReplicaSet"}
 _OWNER_ERROR_CODES = {
@@ -63,7 +65,7 @@ def _observe_kubernetes_tool_outcome(tool_name: str, context: Any, is_error: boo
     if tool_name in _REMEDIATION_WRITE_TOOLS:
         outcome = "precondition_failed" if code == "PRECONDITION_FAILED" else "error" if is_error else "success"
         remediation_write_outcomes_total.labels(tool=tool_name, outcome=outcome).inc()
-        if tool_name == "patch_resource" and code == "PRECONDITION_FAILED":
+        if tool_name in {"patch_workload", "patch_resource", "patch_configmap"} and code == "PRECONDITION_FAILED":
             patch_precondition_failures_total.inc()
     if tool_name != "get_resource" or not isinstance(context, dict):
         return

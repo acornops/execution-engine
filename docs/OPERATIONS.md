@@ -69,4 +69,8 @@ Optional tuning:
 - Terminal commit backlog: inspect `execution_engine_terminal_commits_pending`, control-plane commit endpoint health, and execution-engine logs for commit retry failures.
 - Event outbox backlog: inspect `execution_engine_event_outbox_pending`, event endpoint health, and retry metrics.
 - Duplicate dispatch conflict: confirm the upstream control plane is not reusing a `run_id` across different workspace, target, target type, session, or message identity.
-- Remediation verification failed or missing: inspect the run's compact `patch_resource` receipt and subsequent `get_resource` evidence. A failed outcome means the fresh image observation contradicted the requested image; missing means the run ended before a matching target observation.
+- Remediation verification failed or missing: inspect the run's compact
+  `patch_workload` or `patch_configmap` receipt and subsequent `get_resource`
+  evidence. A failed outcome means the fresh image, environment descriptor, or
+  ConfigMap fingerprint contradicted the requested state; missing means the run
+  ended before a matching target observation.

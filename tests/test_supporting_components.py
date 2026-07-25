@@ -312,7 +312,7 @@ async def test_gateway_tool_client_rejects_oversized_producer_projection(
 ):
     model_context = {
         "schemaVersion": "acornops.model-context.v1",
-        "tool": "patch_resource",
+        "tool": "patch_workload",
         "status": "success",
         "summary": "Patched resource.",
         "data": {"padding": "x" * (12 * 1024)},
@@ -345,11 +345,11 @@ async def test_gateway_tool_client_rejects_oversized_producer_projection(
     )
     client = GatewayToolClient(
         url="http://gateway", token="token", workspace_id="ws", target_id="cluster",
-        target_type="kubernetes", run_id="run-1", allowed_tools=["patch_resource"],
-        tool_capabilities={"patch_resource": "write"},
+        target_type="kubernetes", run_id="run-1", allowed_tools=["patch_workload"],
+        tool_capabilities={"patch_workload": "write"},
     )
     try:
-        response = await client.call_tool("patch_resource", {"name": "api"})
+        response = await client.call_tool("patch_workload", {"name": "api"})
     finally:
         await client.close()
 
@@ -532,8 +532,8 @@ async def test_gateway_tool_client_maps_transport_errors(
 async def test_gateway_tool_client_marks_ambiguous_write_failure_unknown(monkeypatch: pytest.MonkeyPatch):
     client = GatewayToolClient(
         url="http://gateway", token="token", workspace_id="ws", target_id="cluster",
-        target_type="kubernetes", run_id="run-1", allowed_tools=["patch_resource"],
-        tool_capabilities={"patch_resource": "write"},
+        target_type="kubernetes", run_id="run-1", allowed_tools=["patch_workload"],
+        tool_capabilities={"patch_workload": "write"},
     )
     monkeypatch.setattr(
         client,
@@ -541,12 +541,12 @@ async def test_gateway_tool_client_marks_ambiguous_write_failure_unknown(monkeyp
         AsyncMock(side_effect=httpx.TimeoutException("timed out")),
     )
     try:
-        response = await client.call_tool("patch_resource", {"name": "api"})
+        response = await client.call_tool("patch_workload", {"name": "api"})
     finally:
         await client.close()
 
     assert response["full_result"] == {
-        "code": "TOOL_TIMEOUT", "message": "Tool 'patch_resource' timed out.",
+        "code": "TOOL_TIMEOUT", "message": "Tool 'patch_workload' timed out.",
         "retryable": False, "outcome": "unknown",
     }
 
@@ -569,11 +569,11 @@ async def test_gateway_tool_client_bounds_normalized_response_and_marks_write_un
     monkeypatch.setattr(tools_module.settings, "TOOL_GATEWAY_MAX_RESPONSE_BYTES", 32)
     client = GatewayToolClient(
         url="http://gateway", token="token", workspace_id="ws", target_id="cluster",
-        target_type="kubernetes", run_id="run-1", allowed_tools=["patch_resource"],
-        tool_capabilities={"patch_resource": "write"},
+        target_type="kubernetes", run_id="run-1", allowed_tools=["patch_workload"],
+        tool_capabilities={"patch_workload": "write"},
     )
     try:
-        response = await client.call_tool("patch_resource", {"name": "api"})
+        response = await client.call_tool("patch_workload", {"name": "api"})
     finally:
         await client.close()
 
@@ -1172,6 +1172,17 @@ def test_fetch_event_omits_url_query_and_response_body():
         "acornops_fetch",
         {"url": "https://api.example.com/search?secret=query-value"},
     ) == {"url": "[redacted]"}
+    sanitized = tool_call_event_arguments(
+        "patch_workload",
+        {
+            "changes": [
+                {"type": "set_env", "name": "LOG_LEVEL", "value": "debug"},
+                {"type": "set_image", "image": "api:v2"},
+            ],
+        },
+    )
+    assert sanitized["changes"][0]["value"] == "[redacted]"
+    assert sanitized["changes"][1]["image"] == "api:v2"
     fallback_result = tool_result_event_summary("acornops_fetch", chunk["result"])
     assert "query-value" not in str(fallback_result)
     assert "response body" not in str(fallback_result)
