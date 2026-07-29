@@ -61,11 +61,12 @@ The execution engine owns run execution and talks only to the control plane and 
   the caller's explicit `confirm_non_secret_data=true` assertion before the
   request can proceed to approval; AgentK applies the same check to literal
   environment and ConfigMap writes.
-- Workload `patch_workload` approval is fail-closed unless its exact UID,
-  resource version, image, and environment-source preconditions match a
-  successful Pod ownership projection already in the run evidence ledger.
-  Service, Ingress, and ConfigMap patches require direct resource evidence.
-  Direct controller-name reads do not authorize workload patches.
+- Workload `patch_workload` and `patch_resource` approval is fail-closed unless
+  the exact UID, image, and environment-source preconditions, plus a resource
+  version when one is supplied, match a successful Pod ownership projection
+  already in the run evidence ledger. Service, Ingress, and ConfigMap patches
+  require direct resource evidence; a direct controller-name read does not
+  substitute for Pod ownership evidence on workload operations.
 
 ## LLM-Gateway Boundary Notes
 

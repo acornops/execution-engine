@@ -75,8 +75,10 @@ def remediation_preapproval_validation(
         "namespace": arguments.get("namespace"),
         "name": arguments.get("name"),
         "uid": arguments.get("expected_uid"),
-        "resourceVersion": arguments.get("expected_resource_version"),
     }
+    expected_resource_version = arguments.get("expected_resource_version")
+    if expected_resource_version is not None:
+        target["resourceVersion"] = expected_resource_version
     matched_context: dict[str, Any] | None = None
     seen_keys: set[str] = set()
     for entry in reversed(evidence_entries):
@@ -96,14 +98,18 @@ def remediation_preapproval_validation(
         ownership = data.get("ownership") if isinstance(data, dict) else None
         if not _target_matches(remediation_target, target):
             continue
+        pod_owner_matches = (
+            isinstance(resource, dict)
+            and resource.get("kind") == "Pod"
+            and isinstance(ownership, dict)
+            and ownership.get("status") == "resolved"
+            and _target_matches(ownership.get("remediationTarget"), target)
+        )
         if tool == "patch_workload":
-            if not (
-                isinstance(resource, dict)
-                and resource.get("kind") == "Pod"
-                and isinstance(ownership, dict)
-                and ownership.get("status") == "resolved"
-                and _target_matches(ownership.get("remediationTarget"), target)
-            ):
+            if not pod_owner_matches:
+                continue
+        elif tool == "patch_resource":
+            if not (_target_matches(resource, target) or pod_owner_matches):
                 continue
         elif not _target_matches(resource, target):
             continue
@@ -123,7 +129,7 @@ def remediation_preapproval_validation(
         })
     else:
         remediation_target = matched_context.get("remediationTarget")
-        if tool == "patch_workload":
+        if tool in {"patch_workload", "patch_resource"}:
             details.extend(_workload_precondition_evidence_errors(arguments, remediation_target))
         if tool == "patch_configmap":
             details.extend(_configmap_precondition_evidence_errors(arguments, matched_context))

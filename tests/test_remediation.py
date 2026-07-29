@@ -82,6 +82,44 @@ def test_patch_accepts_exact_pod_resolved_target_and_current_image():
     ) is None
 
 
+def test_patch_resource_accepts_pod_resolved_target_without_unadvertised_resource_version():
+    arguments = patch_arguments()
+    arguments.pop("expected_resource_version")
+
+    assert remediation_preapproval_validation(
+        "call-1", "patch_resource", arguments, [pod_remediation_evidence()]
+    ) is None
+
+
+def test_patch_resource_rejects_wrong_pod_resolved_target_uid():
+    arguments = patch_arguments()
+    arguments.pop("expected_resource_version")
+    arguments["expected_uid"] = "deployment-guessed"
+
+    validation = remediation_preapproval_validation(
+        "call-1", "patch_resource", arguments, [pod_remediation_evidence()]
+    )
+
+    assert validation is not None
+    assert validation[0]["data"]["code"] == "REMEDIATION_TARGET_NOT_RESOLVED"
+
+
+def test_patch_resource_rejects_image_precondition_not_present_in_resolved_evidence():
+    arguments = patch_arguments()
+    arguments.pop("expected_resource_version")
+    arguments["changes"][0]["expected_image"] = "registry.example/api:guessed"
+
+    validation = remediation_preapproval_validation(
+        "call-1", "patch_resource", arguments, [pod_remediation_evidence()]
+    )
+
+    assert validation is not None
+    assert validation[0]["data"]["validationDetails"] == [{
+        "path": "$.changes[0].expected_image",
+        "message": "expected image must equal the current image in the resolved remediationTarget",
+    }]
+
+
 def test_patch_rejects_inconsistent_top_level_and_ownership_targets():
     evidence = pod_remediation_evidence()
     evidence["context"]["data"]["ownership"]["remediationTarget"] = None
