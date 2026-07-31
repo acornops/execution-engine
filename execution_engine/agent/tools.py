@@ -329,6 +329,7 @@ class GatewayToolClient(ToolClient):
         allowed_tools: Iterable[str],
         tool_capabilities: Dict[str, str] | None = None,
         tool_refs: Dict[str, Dict[str, str]] | None = None,
+        target_tool_routes: Dict[str, Dict[str, Dict[str, str]]] | None = None,
         scope_type: str = "target",
         workflow_id: str | None = None,
         execution_id: str | None = None,
@@ -359,6 +360,24 @@ class GatewayToolClient(ToolClient):
             alias: {"server_id": str(ref["server_id"]), "tool_name": str(ref["tool_name"])}
             for alias, ref in (tool_refs or {}).items()
             if isinstance(ref, dict) and ref.get("server_id") and ref.get("tool_name")
+        }
+        self.target_tool_routes = {
+            alias: {
+                target_id: {
+                    "target_id": str(route["target_id"]),
+                    "target_type": str(route["target_type"]),
+                    "server_id": str(route["server_id"]),
+                    "tool_name": str(route["tool_name"]),
+                }
+                for target_id, route in routes.items()
+                if isinstance(route, dict)
+                and route.get("target_id")
+                and route.get("target_type")
+                and route.get("server_id")
+                and route.get("tool_name")
+            }
+            for alias, routes in (target_tool_routes or {}).items()
+            if isinstance(routes, dict)
         }
         self.headers = {"Authorization": f"Bearer {self.token}"}
         self._client = httpx.AsyncClient(
@@ -409,12 +428,33 @@ class GatewayToolClient(ToolClient):
 
         write_capable = self.tool_capabilities.get(tool_name, "write") == "write"
 
+        target_id = self.target_id
+        target_type = self.target_type
+        tool_ref = self.tool_refs.get(tool_name)
+        tool_arguments = dict(arguments)
+        routes = self.target_tool_routes.get(tool_name)
+        if routes:
+            requested_target_id = tool_arguments.pop("target_id", None)
+            route = routes.get(requested_target_id) if isinstance(requested_target_id, str) else None
+            if route is None:
+                tool_calls_total.labels(result="not_allowed").inc()
+                return _error_result({
+                    "code": "TOOL_TARGET_NOT_ALLOWED",
+                    "message": f"Tool '{tool_name}' requires an allowed target_id.",
+                })
+            target_id = route["target_id"]
+            target_type = route["target_type"]
+            tool_ref = {
+                "server_id": route["server_id"],
+                "tool_name": route["tool_name"],
+            }
+
         payload = ToolCallRequest(
             run_id=self.run_id,
             workspace_id=self.workspace_id,
             scope={"type": self.scope_type},
-            target_id=self.target_id,
-            target_type=self.target_type,
+            target_id=target_id,
+            target_type=target_type,
             workflow_id=self.workflow_id,
             execution_id=self.execution_id,
             workflow_session_id=self.workflow_session_id,
@@ -425,8 +465,8 @@ class GatewayToolClient(ToolClient):
             tool_call_id=call_id,
             approval_receipt=approval_receipt,
             tool=tool_name,
-            tool_ref=self.tool_refs.get(tool_name),
-            arguments=arguments
+            tool_ref=tool_ref,
+            arguments=tool_arguments
         )
 
         payload_json = payload.model_dump()

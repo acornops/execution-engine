@@ -42,7 +42,11 @@ from execution_engine.worker_tool_artifacts import (
     tool_result_event_payload,
     tool_result_event_summary,
 )
-from execution_engine.worker_tool_authority import build_runtime_tool_client, provider_native_tools
+from execution_engine.worker_tool_authority import (
+    build_runtime_tool_client,
+    provider_native_tools,
+    resolve_approval_tool_ref,
+)
 from execution_engine.worker_tool_sanitizer import sanitize_tool_spec_for_llm
 
 
@@ -222,7 +226,13 @@ class Worker:
                 timeout_ms=snapshot.llm.gateway.request_timeout_ms or 60000
             )
 
-            tool_client, tool_capabilities, allowed_gateway_tools, allowed_tool_names = (
+            (
+                tool_client,
+                tool_capabilities,
+                allowed_gateway_tools,
+                allowed_tool_names,
+                target_tool_routes,
+            ) = (
                 build_runtime_tool_client(snapshot, state, self.orchestrator_client)
             )
             llm_native_tools = provider_native_tools(snapshot.tools.native_tools)
@@ -235,8 +245,8 @@ class Worker:
             ]
             approval_tool_refs = {
                 str(spec.get("name")): {
-                    "serverId": str(spec.get("server_id")),
-                    "toolName": str(spec.get("tool_name")),
+                    "server_id": str(spec.get("server_id")),
+                    "tool_name": str(spec.get("tool_name")),
                 }
                 for spec in snapshot.tools.tool_specs
                 if isinstance(spec, dict)
@@ -498,7 +508,12 @@ class Worker:
                                 state.run_id,
                                 tool_call_id=chunk["call_id"],
                                 tool_name=chunk["tool"],
-                                tool_ref=approval_tool_refs[chunk["tool"]],
+                                tool_ref=resolve_approval_tool_ref(
+                                    chunk["tool"],
+                                    chunk["arguments"],
+                                    approval_tool_refs,
+                                    target_tool_routes,
+                                ),
                                 summary=chunk.get("summary"),
                                 arguments=chunk["arguments"],
                                 continuation=chunk["continuation"],

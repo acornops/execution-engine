@@ -36,6 +36,11 @@ The execution engine owns run execution and talks only to the control plane and 
   route; execution-engine does not make the external HTTP request itself.
   Provider-native `web_search` remains the only declaration sent through
   `native_tools`, while target and MCP tools retain their existing route.
+- Workflow target MCP tools carry explicit `target_routes` in their tool spec.
+  The model chooses `target_id`; the engine removes that routing field from the
+  MCP arguments and sends only the matching target type and server-qualified
+  tool reference to llm-gateway. Missing, duplicate, or unlisted routes fail
+  closed before transport.
 - Execution-engine never calls target agents, management-console, or external MCP servers directly.
 - Cancellation is terminal from the engine's point of view; after cancellation wins, user-visible assistant output stops.
 - Approval continuations must not store gateway tokens or credentials. Resume reboots policy through control-plane bootstrap.

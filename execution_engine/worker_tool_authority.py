@@ -44,6 +44,74 @@ def build_authorized_tool_routing(
     return tool_refs, [name for name in allowed_tools if name in tool_refs]
 
 
+def build_authorized_target_tool_routing(
+    allowed_tools: list[str],
+    allowed_tool_refs: list[dict[str, Any]],
+    tool_specs: list[dict[str, Any]],
+) -> dict[str, dict[str, dict[str, str]]]:
+    """Return model aliases mapped to their explicitly authorized target routes."""
+    allowed = set(allowed_tools)
+    authorized_refs = {
+        (str(ref.get("server_id")), str(ref.get("tool_name")))
+        for ref in allowed_tool_refs
+        if isinstance(ref, dict) and ref.get("server_id") and ref.get("tool_name")
+    }
+    routing: dict[str, dict[str, dict[str, str]]] = {}
+    for spec in tool_specs:
+        if not isinstance(spec, dict) or not isinstance(spec.get("name"), str):
+            continue
+        alias = str(spec["name"])
+        routes = spec.get("target_routes")
+        if alias not in allowed or not isinstance(routes, list):
+            continue
+        for route in routes:
+            if not isinstance(route, dict):
+                continue
+            target_id = route.get("target_id")
+            target_type = route.get("target_type")
+            server_id = route.get("server_id")
+            tool_name = route.get("tool_name")
+            if (
+                not isinstance(target_id, str)
+                or target_type not in {"kubernetes", "virtual_machine"}
+                or not isinstance(server_id, str)
+                or not isinstance(tool_name, str)
+                or (server_id, tool_name) not in authorized_refs
+            ):
+                continue
+            alias_routes = routing.setdefault(alias, {})
+            if target_id in alias_routes:
+                raise ValueError(f"duplicate target route for {alias} and {target_id}")
+            alias_routes[target_id] = {
+                "target_id": target_id,
+                "target_type": target_type,
+                "server_id": server_id,
+                "tool_name": tool_name,
+            }
+    return routing
+
+
+def resolve_approval_tool_ref(
+    tool_name: str,
+    arguments: dict[str, Any],
+    tool_refs: dict[str, dict[str, str]],
+    target_tool_routes: dict[str, dict[str, dict[str, str]]],
+) -> dict[str, str]:
+    """Resolve the exact MCP reference covered by a write approval."""
+    ref = tool_refs.get(tool_name)
+    if ref is not None:
+        return {"serverId": ref["server_id"], "toolName": ref["tool_name"]}
+    target_id = arguments.get("target_id")
+    route = (
+        target_tool_routes.get(tool_name, {}).get(target_id)
+        if isinstance(target_id, str)
+        else None
+    )
+    if route is None:
+        raise ValueError(f"write tool {tool_name} does not have an authorized target route")
+    return {"serverId": route["server_id"], "toolName": route["tool_name"]}
+
+
 def platform_function_mappings(
     allowed_tools: list[str],
     platform_functions: list[dict[str, Any]],
@@ -100,7 +168,13 @@ def build_runtime_tool_client(
     snapshot: ExecutionSnapshot,
     state: RunState,
     orchestrator_client: OrchestratorClient,
-) -> tuple[ToolClient, dict[str, str], list[str], set[str]]:
+) -> tuple[
+    ToolClient,
+    dict[str, str],
+    list[str],
+    set[str],
+    dict[str, dict[str, dict[str, str]]],
+]:
     """Build the exact gateway and coordination client authorized by a pinned snapshot."""
     tool_capabilities = {
         str(spec.get("name")): "read" if spec.get("capability") == "read" else "write"
@@ -112,6 +186,16 @@ def build_runtime_tool_client(
         snapshot.tools.allowed_tool_refs,
         snapshot.tools.tool_specs,
     )
+    target_tool_routes = build_authorized_target_tool_routing(
+        snapshot.tools.allowed_tools,
+        snapshot.tools.allowed_tool_refs,
+        snapshot.tools.tool_specs,
+    )
+    allowed_gateway_tools = [
+        name
+        for name in snapshot.tools.allowed_tools
+        if name in tool_refs or name in target_tool_routes
+    ]
     coordination_tools = [
         name
         for name in snapshot.tools.allowed_tools
@@ -133,6 +217,7 @@ def build_runtime_tool_client(
             allowed_tools=allowed_gateway_tools,
             tool_capabilities=tool_capabilities,
             tool_refs=tool_refs,
+            target_tool_routes=target_tool_routes,
             scope_type=state.scope_type,
             workflow_id=state.workflow_id,
             execution_id=state.execution_id,
@@ -159,4 +244,10 @@ def build_runtime_tool_client(
             coordination_tools,
         )
     allowed_tool_names = set(allowed_gateway_tools) | set(coordination_tools) | set(platform_tools)
-    return client, tool_capabilities, allowed_gateway_tools, allowed_tool_names
+    return (
+        client,
+        tool_capabilities,
+        allowed_gateway_tools,
+        allowed_tool_names,
+        target_tool_routes,
+    )

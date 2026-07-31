@@ -27,9 +27,11 @@ from execution_engine.worker_tool_artifacts import (
     tool_result_event_summary,
 )
 from execution_engine.worker_tool_authority import (
+    build_authorized_target_tool_routing,
     build_authorized_tool_routing,
     platform_function_mappings,
     provider_native_tools,
+    resolve_approval_tool_ref,
 )
 
 SUCCESS_STREAM_RESPONSE_DATA = (
@@ -63,6 +65,69 @@ def test_tool_routing_requires_an_exact_authorized_reference():
     assert tool_refs == {
         "server_a_records_list": {"server_id": "server-a", "tool_name": "records.list"}
     }
+
+
+def test_target_tool_routing_requires_allowed_alias_and_reference():
+    routes = build_authorized_target_tool_routing(
+        ["read_target"],
+        [{"server_id": "targets", "tool_name": "read"}],
+        [{
+            "name": "read_target",
+            "target_routes": [
+                {
+                    "target_id": "vm-1",
+                    "target_type": "virtual_machine",
+                    "server_id": "targets",
+                    "tool_name": "read",
+                },
+                {
+                    "target_id": "vm-2",
+                    "target_type": "virtual_machine",
+                    "server_id": "unapproved",
+                    "tool_name": "read",
+                },
+            ],
+        }],
+    )
+
+    assert routes == {
+        "read_target": {
+            "vm-1": {
+                "target_id": "vm-1",
+                "target_type": "virtual_machine",
+                "server_id": "targets",
+                "tool_name": "read",
+            }
+        }
+    }
+
+
+def test_dynamic_target_write_approval_resolves_the_selected_exact_tool_ref():
+    assert resolve_approval_tool_ref(
+        "restart_target",
+        {"target_id": "vm-1", "service": "api"},
+        {},
+        {
+            "restart_target": {
+                "vm-1": {
+                    "target_id": "vm-1",
+                    "target_type": "virtual_machine",
+                    "server_id": "targets",
+                    "tool_name": "restart",
+                }
+            }
+        },
+    ) == {"serverId": "targets", "toolName": "restart"}
+
+
+def test_dynamic_target_write_approval_rejects_an_unknown_target():
+    with pytest.raises(ValueError, match="does not have an authorized target route"):
+        resolve_approval_tool_ref(
+            "restart_target",
+            {"target_id": "vm-2"},
+            {},
+            {"restart_target": {}},
+        )
 
 
 def test_platform_functions_require_all_snapshot_authorities():
@@ -304,6 +369,74 @@ async def test_gateway_tool_client_posts_valid_request_and_returns_gateway_respo
     assert response["model_context"] == {"ok": True}
     assert response["context_meta"]["strategy"] == "generic_fallback"
     assert response["is_error"] is False
+
+
+@pytest.mark.asyncio
+async def test_gateway_tool_client_routes_target_id_argument(monkeypatch: pytest.MonkeyPatch):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode())
+        assert payload["scope"] == {"type": "workspace"}
+        assert payload["target_id"] == "vm-1"
+        assert payload["target_type"] == "virtual_machine"
+        assert payload["tool_ref"] == {"server_id": "targets", "tool_name": "read"}
+        assert payload["arguments"] == {"path": "/var/log/app.log"}
+        return httpx.Response(200, json={
+            "full_result": {"ok": True},
+            "model_context": {"ok": True},
+            "context_meta": {
+                "schema_version": "v1",
+                "strategy": "mcp_content",
+                "original_bytes": 11,
+                "context_bytes": 11,
+                "truncated": False,
+                "omissions": [],
+            },
+            "artifact_eligible": False,
+            "is_error": False,
+        }, request=request)
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        tools_module.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: real_async_client(
+            *args, transport=httpx.MockTransport(handler), **kwargs
+        ),
+    )
+    client = GatewayToolClient(
+        url="http://gateway",
+        token="token",
+        workspace_id="ws",
+        target_id=None,
+        target_type=None,
+        run_id="run-1",
+        allowed_tools=["read_target"],
+        target_tool_routes={
+            "read_target": {
+                "vm-1": {
+                    "target_id": "vm-1",
+                    "target_type": "virtual_machine",
+                    "server_id": "targets",
+                    "tool_name": "read",
+                }
+            }
+        },
+        scope_type="workspace",
+        workflow_id="workflow-1",
+        execution_id="execution-1",
+        workflow_session_id="session-1",
+        executor_role="specialist",
+        agent_id="agent-1",
+        agent_version=1,
+    )
+    try:
+        response = await client.call_tool(
+            "read_target", {"target_id": "vm-1", "path": "/var/log/app.log"}
+        )
+    finally:
+        await client.close()
+
+    assert response["full_result"] == {"ok": True}
 
 
 @pytest.mark.asyncio
