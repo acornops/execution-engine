@@ -7,7 +7,7 @@ from typing import Any, Callable
 from execution_engine.agent.react_engine import ReActAgentEngine
 from execution_engine.config import settings
 from execution_engine.gateway_client import GatewayLlmClient
-from execution_engine.models import CommitRequest, Message, Timing, Usage
+from execution_engine.models import CommitRequest, Timing, Usage
 from execution_engine.orchestrator_client import EventManager, OrchestratorClient
 from execution_engine.reasoning_summary_events import ReasoningSummaryEventForwarder
 from execution_engine.run_registry import RunRegistry, RunState, RunStatus
@@ -26,7 +26,7 @@ from execution_engine.worker_run_support import (
     approval_event_payload,
     build_loaded_skill_result,
     build_skill_catalog_event_payload,
-    build_skill_catalog_messages,
+    build_skill_catalog_instruction,
     build_skill_loader_tool_spec,
     build_skill_names_by_ref,
     build_target_insights_context_event_payload,
@@ -393,14 +393,13 @@ class Worker:
                     return
 
             input_messages = context.messages if context else []
-            if snapshot.assistant and snapshot.assistant.instructions.strip():
-                input_messages = [
-                    Message(role="system", content=snapshot.assistant.instructions.strip()),
-                    *input_messages,
-                ]
+            assistant_instruction = snapshot.assistant.instructions.strip() if snapshot.assistant else None
             skill_names_by_ref = build_skill_names_by_ref(snapshot.skills)
+            skill_catalog_instruction = None
             if snapshot.scope.type == "target":
-                input_messages = build_skill_catalog_messages(snapshot.skills) + input_messages
+                skill_catalog_instruction = build_skill_catalog_instruction(
+                    snapshot.skills
+                )
                 skill_catalog_payload = build_skill_catalog_event_payload(snapshot.skills)
                 if skill_catalog_payload and not continuation:
                     emit_event("skill_catalog_available", skill_catalog_payload)
@@ -424,6 +423,8 @@ class Worker:
                     if isinstance(tool, dict) and tool.get("name")
                 ],
                 referenced_skill_refs=snapshot.skills.referenced_refs if snapshot.skills else [],
+                assistant_instruction=assistant_instruction,
+                skill_catalog_instruction=skill_catalog_instruction,
             )
             if state.cancel_event.is_set():
                 finish_cancelled_run()

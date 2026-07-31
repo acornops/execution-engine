@@ -17,19 +17,13 @@ async def health():
 async def stream(request: Request):
     data = await request.json()
     run_id = data.get("run_id", "")
-    messages = data.get("messages", [])
+    transcript = data.get("transcript", [])
 
     async def event_generator():
-        # Check if we've already handled the tool call in this conversation.
-        # ReAct feeds tool outputs back inside one bounded evidence message.
+        # Check whether the canonical transcript contains a closed tool exchange.
         has_tool_response = any(
-            m.get("role") == "tool"
-            or (
-                m.get("role") == "user"
-                and isinstance(m.get("content"), str)
-                and "Live tool results:" in m["content"]
-            )
-            for m in messages
+            turn.get("type") == "tool_results"
+            for turn in transcript
         )
 
         if run_id == EXAMPLE_TOOL_RUN_ID and not has_tool_response:

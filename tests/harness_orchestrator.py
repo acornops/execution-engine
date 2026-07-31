@@ -90,7 +90,6 @@ async def bootstrap(run_id: str):
 async def context(session_id: str, run_id: str):
     return {
         "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Hello!"}
         ],
         "summaries": [],

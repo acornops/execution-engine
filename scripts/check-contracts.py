@@ -201,7 +201,7 @@ for tool_name in GATEWAY_CONTRACT["internalModelOnlyTools"]:
     expect_in(MANIFEST_TEXT, tool_name, "Manifest internal model-only tool")
     expect_in(SKILL_CONSTANTS_SOURCE, f'"{tool_name}"', "Internal model-only tool constant")
     expect_in(SKILL_LOADING_SOURCE, "INTERNAL_LOAD_TARGET_SKILL_TOOL", "ReAct skill loader interception")
-    expect_in(REACT_ENGINE_SOURCE, "load_requested_skill_contexts", "ReAct skill loader interception")
+    expect_in(REACT_ENGINE_SOURCE, "resolve_skill_call", "ReAct skill loader interception")
     expect_in(WORKER_RUN_SUPPORT_SOURCE, "INTERNAL_LOAD_TARGET_SKILL_TOOL", "Skill loader spec builder")
 
 expect_in(

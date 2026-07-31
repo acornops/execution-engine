@@ -71,6 +71,12 @@ The execution engine owns run execution and talks only to the control plane and 
 ## LLM-Gateway Boundary Notes
 
 - Model streaming and MCP tool calls use the run-scoped JWT minted by the control plane.
+- Model streaming sends exactly one trusted `runtime_instruction` plus a typed,
+  provider-neutral `transcript`; transcript roles are user, assistant, and
+  grouped tool results. The gateway owns every provider-native serialization.
+- Tool-call continuation metadata is opaque, provider-namespaced, bounded to
+  32 KiB, persisted only for same-provider continuation, and excluded from
+  public events and ordinary logs.
 - Bounded structured 4xx tool errors from llm-gateway, including
   `TOOL_ARGS_INVALID`, remain visible to the ReAct loop so it can correct the
   arguments instead of inventing a target or connectivity diagnosis.

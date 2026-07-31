@@ -17,7 +17,6 @@ import execution_engine.app as app_module
 import execution_engine.worker as worker_module
 import execution_engine.worker_tool_authority as worker_tool_authority_module
 from execution_engine.agent.react_engine import ReActAgentEngine
-from execution_engine.agent.tool_context import set_tool_evidence_message
 from execution_engine.agent.tools import CoordinationToolClient, GatewayToolClient
 from execution_engine.app import app
 from execution_engine.approval_summary import build_approval_summary
@@ -521,12 +520,10 @@ def test_worker_keeps_deep_tool_schemas_valid_without_injecting_none():
                                             "type": "string",
                                             "enum": ["resource", "pod_template"],
                                         },
-                                        "expected_value": {
-                                            "anyOf": [{"type": "string"}, {"type": "null"}]
-                                        },
+                                        "expected_value": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                                     },
                                     "additionalProperties": False,
-                                }
+                                },
                             ]
                         },
                     }
@@ -550,9 +547,7 @@ def test_worker_keeps_deep_tool_schemas_valid_without_injecting_none():
     assert image_operation["properties"]["image"]["type"] == "string"
     operation = schema["properties"]["changes"]["items"]["oneOf"][1]
     assert operation["properties"]["scope"]["enum"] == ["resource", "pod_template"]
-    assert operation["properties"]["expected_value"]["anyOf"] == [
-        {"type": "string"}, {"type": "null"}
-    ]
+    assert operation["properties"]["expected_value"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
     assert operation["additionalProperties"] is False
 
     def contains_none(value):
@@ -863,6 +858,7 @@ async def test_run_registry_queue():
     assert r1 == "r1"
     registry.task_done()
 
+
 @pytest.mark.asyncio
 async def test_event_manager_batching():
     mock_client = MagicMock(spec=OrchestratorClient)
@@ -1161,12 +1157,16 @@ async def test_coordination_functions_never_dispatch_through_the_mcp_gateway():
         [CoordinationToolClient.DELEGATE, CoordinationToolClient.AWAIT],
     )
 
-    delegated = await client.call_tool(CoordinationToolClient.DELEGATE, {
-        "capabilityId": "target.diagnostics.read",
-        "targetBinding": {"targetId": "target-1", "targetType": "kubernetes"},
-        "taskPrompt": "Inspect the target",
-        "required": True,
-    }, call_id="call-delegate-1")
+    delegated = await client.call_tool(
+        CoordinationToolClient.DELEGATE,
+        {
+            "capabilityId": "target.diagnostics.read",
+            "targetBinding": {"targetId": "target-1", "targetType": "kubernetes"},
+            "taskPrompt": "Inspect the target",
+            "required": True,
+        },
+        call_id="call-delegate-1",
+    )
     awaited = await client.call_tool(CoordinationToolClient.AWAIT, {})
 
     assert delegated["full_result"]["id"] == "delegation-1"
@@ -1384,10 +1384,7 @@ def test_metrics_endpoint_exposes_prometheus_payload(monkeypatch):
         response = client.get("/metrics")
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/plain")
-        assert any(
-            line.startswith("execution_engine_")
-            for line in response.text.splitlines()
-        )
+        assert any(line.startswith("execution_engine_") for line in response.text.splitlines())
     finally:
         client.close()
 
@@ -1437,9 +1434,7 @@ async def test_cancel_run_marks_queued_runs_cancelled(monkeypatch):
     )
     auth_headers = {"Authorization": "Bearer " + settings.EXECUTION_ENGINE_DISPATCH_TOKEN}
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
             f"/api/v1/runs/{state.run_id}/cancel",
             headers=auth_headers,
@@ -1468,9 +1463,7 @@ async def test_cancel_run_persists_active_runs_as_cancelling(monkeypatch):
     registry.persist_state(state)
     auth_headers = {"Authorization": "Bearer " + settings.EXECUTION_ENGINE_DISPATCH_TOKEN}
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
             f"/api/v1/runs/{state.run_id}/cancel",
             headers=auth_headers,
@@ -1586,10 +1579,7 @@ def execution_snapshot(run_id: str, *, allowed_tools: list[str] | None = None) -
         tools=ToolConfig(
             tool_registry_version="test",
             allowed_tools=qualified_tools,
-            allowed_tool_refs=[
-                {"server_id": server_id, "tool_name": name}
-                for name in qualified_tools
-            ],
+            allowed_tool_refs=[{"server_id": server_id, "tool_name": name} for name in qualified_tools],
             tool_specs=[
                 {
                     "name": name,
@@ -1944,22 +1934,27 @@ async def test_react_engine_loads_skill_before_same_turn_tool_calls():
 
     skill_event_types = [chunk["type"] for chunk in chunks if str(chunk["type"]).startswith("skill_context_")]
     assert skill_event_types == ["skill_context_load_started", "skill_context_loaded"]
-    assert not any(chunk["type"] == "tool_call" for chunk in chunks)
-    assert tool_client.calls == []
+    assert [chunk["tool"] for chunk in chunks if chunk["type"] == "tool_call"] == ["list_pods"]
+    assert [
+        chunk["tool"] for chunk in chunks if chunk["type"] == "tool_result"
+    ] == ["list_pods"]
+    assert tool_client.calls == [("list_pods", {"namespace": "demo"})]
     assert loaded_refs == ["skill_1"]
     assert len(llm_client.calls) == 2
-    assert any(
-        message["role"] == "system" and "CNPG triage" in message["content"]
-        for message in llm_client.calls[1]["messages"]
-    )
+    assert "CNPG triage" in llm_client.calls[1]["runtime_instruction"]
+    assert all(turn["type"] != "system" for turn in llm_client.calls[1]["transcript"])
 
 
 @pytest.mark.asyncio
 async def test_react_engine_preloads_referenced_skill_and_names_exact_referenced_tool():
-    llm_client = FakeStreamingLlmClient(streams=[[
-        {"type": "delta", "text": "Checked the referenced capability."},
-        {"type": "final", "usage": {"input_tokens": 4, "output_tokens": 5, "tool_calls": 0}},
-    ]])
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {"type": "delta", "text": "Checked the referenced capability."},
+                {"type": "final", "usage": {"input_tokens": 4, "output_tokens": 5, "tool_calls": 0}},
+            ]
+        ]
+    )
     loaded_refs: list[str] = []
 
     async def load_skill(skill_ref: str) -> dict[str, object]:
@@ -1996,9 +1991,9 @@ async def test_react_engine_preloads_referenced_skill_and_names_exact_referenced
 
     assert loaded_refs == ["skill_1"]
     assert [chunk["type"] for chunk in chunks[:2]] == ["skill_context_load_started", "skill_context_loaded"]
-    first_request_messages = llm_client.calls[0]["messages"]
-    assert any("Loaded referenced CNPG triage instructions" in message["content"] for message in first_request_messages)
-    assert any("`mcp__postgres__inspect_cluster`" in message["content"] for message in first_request_messages)
+    first_runtime_instruction = llm_client.calls[0]["runtime_instruction"]
+    assert "Loaded referenced CNPG triage instructions" in first_runtime_instruction
+    assert "`mcp__postgres__inspect_cluster`" in first_runtime_instruction
 
 
 @pytest.mark.asyncio
@@ -2063,15 +2058,10 @@ async def test_react_engine_dedupes_repeated_skill_loads_without_duplicate_conte
     loaded_events = [chunk for chunk in chunks if chunk["type"] == "skill_context_loaded"]
     assert load_count == 1
     assert len(loaded_events) == 1
-    assert sum(
-        1
-        for message in llm_client.calls[-1]["messages"]
-        if "Loaded target troubleshooting skill context" in message["content"]
-    ) == 1
-    assert any(
-        "already loaded" in message["content"]
-        for message in llm_client.calls[-1]["messages"]
-    )
+    runtime_instruction = llm_client.calls[-1]["runtime_instruction"]
+    assert runtime_instruction.count("Loaded target troubleshooting skill context") == 1
+    second_results = llm_client.calls[-1]["transcript"][-1]["results"]
+    assert second_results[0]["result"]["status"] == "already_loaded"
 
 
 @pytest.mark.asyncio
@@ -2168,14 +2158,14 @@ async def test_react_engine_handles_malformed_skill_loader_arguments_without_cra
     failure = next(chunk for chunk in chunks if chunk["type"] == "skill_context_load_failed")
     assert failure["code"] == "INVALID_SKILL_REF"
     assert len(llm_client.calls) == 2
-    assert any(
-        "skill_ref was missing" in message["content"]
-        for message in llm_client.calls[1]["messages"]
-    )
+    assert llm_client.calls[1]["transcript"][-1]["results"][0]["result"] == {
+        "code": "INVALID_SKILL_REF",
+        "message": "Skill loader requires skill_ref.",
+    }
 
 
 @pytest.mark.asyncio
-async def test_react_engine_skill_byte_budget_failure_discards_same_turn_tools():
+async def test_react_engine_skill_byte_budget_failure_closes_same_turn_tools():
     llm_client = FakeStreamingLlmClient(
         streams=[
             [
@@ -2227,20 +2217,22 @@ async def test_react_engine_skill_byte_budget_failure_discards_same_turn_tools()
 
     failure = next(chunk for chunk in chunks if chunk["type"] == "skill_context_load_failed")
     assert failure["code"] == "SKILL_LOAD_BYTES_EXCEEDED"
-    assert tool_client.calls == []
-    assert not any(chunk["type"] == "tool_call" for chunk in chunks)
+    assert tool_client.calls == [("list_pods", {"namespace": "demo"})]
+    assert [chunk["tool"] for chunk in chunks if chunk["type"] == "tool_call"] == ["list_pods"]
     assert len(llm_client.calls) == 2
 
 
 @pytest.mark.asyncio
 async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
     cancel_event = asyncio.Event()
-    llm_client = FakeStreamingLlmClient([
+    llm_client = FakeStreamingLlmClient(
         [
-            {"type": "delta", "text": "Workflow inventory complete."},
-            {"type": "final", "usage": {"input_tokens": 10, "output_tokens": 4, "tool_calls": 0}},
+            [
+                {"type": "delta", "text": "Workflow inventory complete."},
+                {"type": "final", "usage": {"input_tokens": 10, "output_tokens": 4, "tool_calls": 0}},
+            ]
         ]
-    ])
+    )
     scope = Scope(
         type="workspace",
         workspace_id=EXAMPLE_WORKSPACE_ID,
@@ -2293,14 +2285,10 @@ async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
     assert llm_client.calls[0]["agent_id"] == "agent-cluster-triage"
     assert llm_client.calls[0]["agent_version"] == 4
     assert llm_client.calls[0]["trigger_id"] == "trigger-manual-1"
-    assert llm_client.calls[0]["messages"][0] == {
-        "role": "system",
-        "content": (
-            "Built-in capabilities enabled for this run: Web Search. "
-            "When the user asks what tools or capabilities are available, include these separately from "
-            "standard callable function tools. Built-in capabilities may not appear as standard tool-call "
-            "events in run details."
-        ),
+    assert "Built-in capabilities enabled for this run: Web Search." in llm_client.calls[0]["runtime_instruction"]
+    assert llm_client.calls[0]["transcript"][0] == {
+        "type": "user",
+        "content": "Audit workspace MCP exposure.",
     }
     assert llm_client.calls[0]["native_tools"] == [
         {
@@ -2492,11 +2480,10 @@ async def test_gateway_tool_client_preserves_structured_argument_validation_erro
         await tool_client.close()
 
     assert result["full_result"] == {
-            "code": "TOOL_ARGS_INVALID",
-            "message": (
-                "Tool gateway rejected the call: Invalid arguments for tool patch_workload: "
-                "'image' is a required property"
-            ),
+        "code": "TOOL_ARGS_INVALID",
+        "message": (
+            "Tool gateway rejected the call: Invalid arguments for tool patch_workload: 'image' is a required property"
+        ),
     }
     assert result["model_context"] == result["full_result"]
     assert result["artifact_eligible"] is False
@@ -2511,9 +2498,7 @@ async def test_react_engine_stream_iteration_stops_while_gateway_is_idle():
         await asyncio.sleep(60)
         yield {"type": "delta", "text": "stale"}
 
-    next_chunk = asyncio.create_task(anext(
-        ReActAgentEngine._iterate_until_cancelled(idle_stream(), cancel_event)
-    ))
+    next_chunk = asyncio.create_task(anext(ReActAgentEngine._iterate_until_cancelled(idle_stream(), cancel_event)))
     await asyncio.sleep(0)
     cancel_event.set()
 
@@ -2763,17 +2748,14 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
     assert any(event.payload.get("stage") == "approval_resume" for event in resume_events)
     assert any(event.type == "tool_approval_approved" for event in resume_events)
     assert any(
-        event.type == "tool_approval_approved"
-        and event.payload["summary"] == "Restart Deployment acornops-demo/web."
+        event.type == "tool_approval_approved" and event.payload["summary"] == "Restart Deployment acornops-demo/web."
         for event in resume_events
     )
     assert any(
-        event.type == "tool_call_started" and event.payload["tool"] == "restart_workload"
-        for event in resume_events
+        event.type == "tool_call_started" and event.payload["tool"] == "restart_workload" for event in resume_events
     )
     assert any(
-        event.type == "tool_call_completed" and event.payload["tool"] == "restart_workload"
-        for event in resume_events
+        event.type == "tool_call_completed" and event.payload["tool"] == "restart_workload" for event in resume_events
     )
     assert state.status == RunStatus.COMPLETED
     client.mark_tool_approval_execution_finished.assert_awaited_once_with(
@@ -2795,9 +2777,7 @@ def test_write_result_outcome_unknown_requires_error_and_explicit_outcome():
         True,
     )
     assert not worker_module.write_result_outcome_unknown({"outcome": "unknown"}, False)
-    assert not worker_module.write_result_outcome_unknown(
-        {"data": {"outcome": "unknown"}}, False
-    )
+    assert not worker_module.write_result_outcome_unknown({"data": {"outcome": "unknown"}}, False)
     assert not worker_module.write_result_outcome_unknown({"code": "TOOL_TIMEOUT"}, True)
 
 
@@ -2813,12 +2793,14 @@ async def test_worker_emits_approval_requested_summary(monkeypatch):
         EXAMPLE_MESSAGE_ID,
     )
     snapshot = execution_snapshot(state.run_id, allowed_tools=["restart_workload"])
-    snapshot.tools.tool_specs = [{
-        "name": "restart_workload",
-        "server_id": EXAMPLE_SERVER_ID,
-        "tool_name": "restart_workload",
-        "capability": "write",
-    }]
+    snapshot.tools.tool_specs = [
+        {
+            "name": "restart_workload",
+            "server_id": EXAMPLE_SERVER_ID,
+            "tool_name": "restart_workload",
+            "capability": "write",
+        }
+    ]
     snapshot.tools.confirmation_required_for_write = True
 
     approval = ToolApproval(
@@ -2882,12 +2864,14 @@ async def test_worker_omits_missing_approval_requested_summary(monkeypatch):
         EXAMPLE_MESSAGE_ID,
     )
     snapshot = execution_snapshot(state.run_id, allowed_tools=["restart_workload"])
-    snapshot.tools.tool_specs = [{
-        "name": "restart_workload",
-        "server_id": EXAMPLE_SERVER_ID,
-        "tool_name": "restart_workload",
-        "capability": "write",
-    }]
+    snapshot.tools.tool_specs = [
+        {
+            "name": "restart_workload",
+            "server_id": EXAMPLE_SERVER_ID,
+            "tool_name": "restart_workload",
+            "capability": "write",
+        }
+    ]
     snapshot.tools.confirmation_required_for_write = True
 
     approval = ToolApproval(
@@ -2945,12 +2929,14 @@ async def test_worker_preserves_empty_approval_event_summary(monkeypatch):
         EXAMPLE_MESSAGE_ID,
     )
     snapshot = execution_snapshot(state.run_id, allowed_tools=["restart_workload"])
-    snapshot.tools.tool_specs = [{
-        "name": "restart_workload",
-        "server_id": EXAMPLE_SERVER_ID,
-        "tool_name": "restart_workload",
-        "capability": "write",
-    }]
+    snapshot.tools.tool_specs = [
+        {
+            "name": "restart_workload",
+            "server_id": EXAMPLE_SERVER_ID,
+            "tool_name": "restart_workload",
+            "capability": "write",
+        }
+    ]
     snapshot.tools.confirmation_required_for_write = True
 
     approval = ToolApproval(
@@ -3080,84 +3066,108 @@ async def test_react_engine_limits_tool_budget_to_remaining_calls():
     assert [chunk["type"] for chunk in chunks].count("tool_call") == 2
     assert len(tool_client.calls) == 1
     assert tool_client.calls[0][0] == "list_pods"
-    assert llm_client.calls[1]["tools"] == [{"name": "list_pods"}, {"name": "get_pod_logs"}]
-    follow_up_messages = llm_client.calls[1]["messages"]
-    assert all(message["role"] != "tool" for message in follow_up_messages)
-    evidence_message = next(
-        message for message in follow_up_messages
-        if message["role"] == "user" and "Live tool results:" in message["content"]
-    )
-    assert "Tool: list_pods" in evidence_message["content"]
-    assert follow_up_messages[-1]["role"] == "user"
-
-
-def test_tool_evidence_does_not_remove_user_text_with_internal_marker():
-    messages = [
-        {"role": "user", "content": "ACORNOPS_TOOL_EVIDENCE\nThis is user-authored text."},
-        {"role": "system", "content": "ACORNOPS_TOOL_EVIDENCE\nOld internal evidence."},
+    assert llm_client.calls[1]["tools"] == []
+    follow_up_transcript = llm_client.calls[1]["transcript"]
+    assert [turn["type"] for turn in follow_up_transcript] == [
+        "user",
+        "assistant",
+        "tool_results",
     ]
-    set_tool_evidence_message(messages, [], 0)
-
-    assert {
-        "role": "user", "content": "ACORNOPS_TOOL_EVIDENCE\nThis is user-authored text."
-    } in messages
-    internal = [message for message in messages if message.get("_acornops_internal") == "tool_evidence"]
-    assert len(internal) == 1
-    assert internal[0]["role"] == "user"
+    assert [result["call_id"] for result in follow_up_transcript[-1]["results"]] == [
+        "call-1",
+        "call-2",
+    ]
+    assert follow_up_transcript[-1]["results"][1]["is_error"] is True
+    assert follow_up_transcript[-1]["results"][1]["result"]["code"] == "TOOL_CALL_BUDGET_EXCEEDED"
 
 
 @pytest.mark.asyncio
 async def test_react_engine_stops_after_unknown_write_outcome_without_approval():
     arguments = {
-        "kind": "Deployment", "namespace": "demo", "name": "api", "expected_uid": "deployment-1",
-        "changes": [{
-            "type": "set_image", "container_type": "container", "container": "api",
-            "expected_image": "api:broken", "image": "api:v2",
-        }],
+        "kind": "Deployment",
+        "namespace": "demo",
+        "name": "api",
+        "expected_uid": "deployment-1",
+        "changes": [
+            {
+                "type": "set_image",
+                "container_type": "container",
+                "container": "api",
+                "expected_image": "api:broken",
+                "image": "api:v2",
+            }
+        ],
     }
-    llm_client = FakeStreamingLlmClient(streams=[[
-        {"type": "tool_call", "call_id": "call-1", "tool": "patch_workload", "arguments": arguments},
-    ]])
-    tool_client = FakeToolClient({
-        "full_result": {"code": "TOOL_TIMEOUT", "message": "Timed out", "outcome": "unknown"},
-        "model_context": {"code": "TOOL_TIMEOUT", "message": "Timed out", "outcome": "unknown"},
-        "context_meta": {"schema_version": "v1", "strategy": "error", "omissions": []},
-        "artifact_eligible": False,
-        "is_error": True,
-    })
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {"type": "tool_call", "call_id": "call-1", "tool": "patch_workload", "arguments": arguments},
+            ]
+        ]
+    )
+    tool_client = FakeToolClient(
+        {
+            "full_result": {"code": "TOOL_TIMEOUT", "message": "Timed out", "outcome": "unknown"},
+            "model_context": {"code": "TOOL_TIMEOUT", "message": "Timed out", "outcome": "unknown"},
+            "context_meta": {"schema_version": "v1", "strategy": "error", "omissions": []},
+            "artifact_eligible": False,
+            "is_error": True,
+        }
+    )
     engine = ReActAgentEngine(
-        llm_client, tool_client, react_policy(max_steps=2, max_tool_calls=2),
+        llm_client,
+        tool_client,
+        react_policy(max_steps=2, max_tool_calls=2),
         react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1702"),
-        tool_capabilities={"patch_workload": "write"}, confirmation_required_for_write=False,
+        tool_capabilities={"patch_workload": "write"},
+        confirmation_required_for_write=False,
     )
 
-    chunks = [chunk async for chunk in engine.run(
-        [Message(role="user", content="Patch the resource.")], llm_config(),
-        [{"name": "patch_workload"}], asyncio.Event(),
-        continuation_state={
-            "llm_messages": [{"role": "user", "content": "Patch the resource."}],
-            "evidence_ledger": [{
-                "tool": "get_resource", "is_error": False,
-                "context": {
-                    "status": "success",
-                    "data": {
-                        "resource": {"kind": "Pod", "namespace": "demo", "name": "api-broken", "uid": "pod-1"},
-                        "ownership": {
-                            "status": "resolved",
-                            "remediationTarget": {
-                                "kind": "Deployment", "namespace": "demo", "name": "api",
-                                "uid": "deployment-1",
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Patch the resource.")],
+            llm_config(),
+            [{"name": "patch_workload"}],
+            asyncio.Event(),
+            continuation_state={
+                "transcript": [{"type": "user", "content": "Patch the resource."}],
+                "evidence_ledger": [
+                    {
+                        "key": "get_resource:existing",
+                        "tool": "get_resource",
+                        "is_error": False,
+                        "arguments": {},
+                        "protected": True,
+                        "protection": "verification",
+                        "context": {
+                            "status": "success",
+                            "data": {
+                                "resource": {"kind": "Pod", "namespace": "demo", "name": "api-broken", "uid": "pod-1"},
+                                "ownership": {
+                                    "status": "resolved",
+                                    "remediationTarget": {
+                                        "kind": "Deployment",
+                                        "namespace": "demo",
+                                        "name": "api",
+                                        "uid": "deployment-1",
+                                    },
+                                },
+                                "remediationTarget": {
+                                    "kind": "Deployment",
+                                    "namespace": "demo",
+                                    "name": "api",
+                                    "uid": "deployment-1",
+                                    "containers": [{"name": "api", "image": "api:broken"}],
+                                    "initContainers": [],
+                                },
                             },
                         },
-                        "remediationTarget": {
-                            "kind": "Deployment", "namespace": "demo", "name": "api", "uid": "deployment-1",
-                            "containers": [{"name": "api", "image": "api:broken"}], "initContainers": [],
-                        },
                     }
-                },
-            }],
-        },
-    )]
+                ],
+            },
+        )
+    ]
 
     assert [chunk["type"] for chunk in chunks][-2:] == ["tool_result", "error"]
     assert chunks[-1]["code"] == "WRITE_TOOL_OUTCOME_UNKNOWN"
@@ -3193,10 +3203,9 @@ async def test_react_engine_adds_write_unavailable_context_for_read_only_runs():
     ]
 
     assert any(chunk["type"] == "delta" and "role cannot start" in chunk["text"] for chunk in chunks)
-    messages = llm_client.calls[0]["messages"]
-    assert messages[0]["role"] == "system"
-    assert "current user/session is read-only" in messages[0]["content"]
-    assert "role cannot start write-capable assistant runs" in messages[0]["content"]
+    runtime_instruction = llm_client.calls[0]["runtime_instruction"]
+    assert "current user/session is read-only" in runtime_instruction
+    assert "role cannot start write-capable assistant runs" in runtime_instruction
 
 
 @pytest.mark.asyncio
@@ -3227,10 +3236,9 @@ async def test_react_engine_adds_write_unavailable_context_for_read_only_agents(
         )
     ]
 
-    messages = llm_client.calls[0]["messages"]
-    assert messages[0]["role"] == "system"
-    assert "connected agent is running in read-only mode" in messages[0]["content"]
-    assert "agent must be upgraded with write mode enabled" in messages[0]["content"]
+    runtime_instruction = llm_client.calls[0]["runtime_instruction"]
+    assert "connected agent is running in read-only mode" in runtime_instruction
+    assert "agent must be upgraded with write mode enabled" in runtime_instruction
 
 
 @pytest.mark.asyncio
@@ -3261,8 +3269,11 @@ async def test_react_engine_ignores_unknown_write_unavailable_reason():
         )
     ]
 
-    messages = llm_client.calls[0]["messages"]
-    assert messages[0] == {"role": "user", "content": "Check deployment status."}
+    transcript = llm_client.calls[0]["transcript"]
+    assert transcript[0] == {
+        "type": "user",
+        "content": "Check deployment status.",
+    }
 
 
 @pytest.mark.asyncio
@@ -3310,82 +3321,138 @@ async def test_react_engine_interrupts_before_confirmed_write_tool():
 @pytest.mark.asyncio
 async def test_react_engine_rejects_malformed_write_before_approval_then_self_corrects():
     invalid = {
-        "kind": "Deployment", "namespace": "demo", "name": "api", "expected_uid": "uid-1",
-        "changes": [{
-            "type": "set_image", "container": "api", "expected_image": "api:broken", "image": "api:v2",
-        }],
+        "kind": "Deployment",
+        "namespace": "demo",
+        "name": "api",
+        "expected_uid": "uid-1",
+        "changes": [
+            {
+                "type": "set_image",
+                "container": "api",
+                "expected_image": "api:broken",
+                "image": "api:v2",
+            }
+        ],
     }
     corrected = {
-        "kind": "Deployment", "namespace": "demo", "name": "api", "expected_uid": "uid-1",
-        "changes": [{
-            "type": "set_image", "container_type": "container", "container": "api",
-            "expected_image": "api:broken", "image": "api:v2",
-        }],
+        "kind": "Deployment",
+        "namespace": "demo",
+        "name": "api",
+        "expected_uid": "uid-1",
+        "changes": [
+            {
+                "type": "set_image",
+                "container_type": "container",
+                "container": "api",
+                "expected_image": "api:broken",
+                "image": "api:v2",
+            }
+        ],
     }
-    llm_client = FakeStreamingLlmClient(streams=[
-        [{
-            "type": "tool_call", "call_id": "inspect", "tool": "get_resource",
-            "arguments": {"kind": "Pod", "namespace": "demo", "name": "api-broken"},
-        }],
-        [{"type": "tool_call", "call_id": "bad-1", "tool": "patch_workload", "arguments": invalid}],
-        [{"type": "tool_call", "call_id": "bad-2", "tool": "patch_workload", "arguments": invalid}],
-        [{"type": "tool_call", "call_id": "bad-3", "tool": "patch_workload", "arguments": invalid}],
-        [{"type": "tool_call", "call_id": "good", "tool": "patch_workload", "arguments": corrected}],
-    ])
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {
+                    "type": "tool_call",
+                    "call_id": "inspect",
+                    "tool": "get_resource",
+                    "arguments": {"kind": "Pod", "namespace": "demo", "name": "api-broken"},
+                }
+            ],
+            [{"type": "tool_call", "call_id": "bad-1", "tool": "patch_workload", "arguments": invalid}],
+            [{"type": "tool_call", "call_id": "bad-2", "tool": "patch_workload", "arguments": invalid}],
+            [{"type": "tool_call", "call_id": "bad-3", "tool": "patch_workload", "arguments": invalid}],
+            [{"type": "tool_call", "call_id": "good", "tool": "patch_workload", "arguments": corrected}],
+        ]
+    )
     pod_context = {
-        "schemaVersion": "acornops.model-context.v1", "tool": "get_resource", "status": "success",
+        "schemaVersion": "acornops.model-context.v1",
+        "tool": "get_resource",
+        "status": "success",
         "summary": "Resolved Pod owner.",
         "data": {
             "resource": {"kind": "Pod", "namespace": "demo", "name": "api-broken", "uid": "pod-1"},
             "ownership": {
                 "status": "resolved",
                 "remediationTarget": {
-                    "kind": "Deployment", "namespace": "demo", "name": "api", "uid": "uid-1",
+                    "kind": "Deployment",
+                    "namespace": "demo",
+                    "name": "api",
+                    "uid": "uid-1",
                 },
             },
             "remediationTarget": {
-                "kind": "Deployment", "namespace": "demo", "name": "api", "uid": "uid-1",
-                "containers": [{"name": "api", "image": "api:broken"}], "initContainers": [],
+                "kind": "Deployment",
+                "namespace": "demo",
+                "name": "api",
+                "uid": "uid-1",
+                "containers": [{"name": "api", "image": "api:broken"}],
+                "initContainers": [],
             },
         },
         "omissions": [],
     }
-    tool_client = FakeToolClient({
-        "full_result": {"resource": {}}, "model_context": pod_context,
-        "context_meta": {
-            "schema_version": "v1", "strategy": "producer_projection",
-            "original_bytes": 1, "context_bytes": 1, "truncated": False, "omissions": [],
-        },
-        "artifact_eligible": True, "is_error": False,
-    })
+    tool_client = FakeToolClient(
+        {
+            "full_result": {"resource": {}},
+            "model_context": pod_context,
+            "context_meta": {
+                "schema_version": "v1",
+                "strategy": "producer_projection",
+                "original_bytes": 1,
+                "context_bytes": 1,
+                "truncated": False,
+                "omissions": [],
+            },
+            "artifact_eligible": True,
+            "is_error": False,
+        }
+    )
     engine = ReActAgentEngine(
-        llm_client, tool_client,
+        llm_client,
+        tool_client,
         react_policy(max_steps=6, max_tool_calls=5, max_duplicate_tool_calls=2),
         react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1701"),
-        tool_capabilities={"patch_workload": "write"}, confirmation_required_for_write=True,
+        tool_capabilities={"patch_workload": "write"},
+        confirmation_required_for_write=True,
     )
     schema = {
-        "type": "object", "required": ["namespace", "expected_uid", "changes"],
+        "type": "object",
+        "required": ["namespace", "expected_uid", "changes"],
         "properties": {
-            "namespace": {"type": "string"}, "expected_uid": {"type": "string"},
-            "changes": {"type": "array", "items": {"oneOf": [{
-                "type": "object", "required": ["type", "container_type", "image"],
-                "properties": {
-                    "type": {"const": "set_image"}, "container_type": {"type": "string"},
-                    "image": {"type": "string"},
+            "namespace": {"type": "string"},
+            "expected_uid": {"type": "string"},
+            "changes": {
+                "type": "array",
+                "items": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "required": ["type", "container_type", "image"],
+                            "properties": {
+                                "type": {"const": "set_image"},
+                                "container_type": {"type": "string"},
+                                "image": {"type": "string"},
+                            },
+                        }
+                    ]
                 },
-            }]}},
+            },
         },
     }
 
-    chunks = [chunk async for chunk in engine.run(
-        [Message(role="user", content="Repair the image.")], llm_config(),
-        [{"name": "get_resource"}, {"name": "patch_workload", "input_schema": schema}], asyncio.Event(),
-    )]
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Repair the image.")],
+            llm_config(),
+            [{"name": "get_resource"}, {"name": "patch_workload", "input_schema": schema}],
+            asyncio.Event(),
+        )
+    ]
 
     invalid_results = [
-        chunk for chunk in chunks
-        if chunk["type"] == "tool_result" and chunk["tool"] == "patch_workload"
+        chunk for chunk in chunks if chunk["type"] == "tool_result" and chunk["tool"] == "patch_workload"
     ]
     interrupts = [chunk for chunk in chunks if chunk["type"] == "approval_interrupt"]
     assert len(invalid_results) == 3
@@ -3401,22 +3468,37 @@ async def test_react_engine_rejects_malformed_write_before_approval_then_self_co
 @pytest.mark.asyncio
 async def test_react_engine_rejects_patch_without_resolved_pod_evidence_before_approval():
     arguments = {
-        "kind": "Deployment", "namespace": "demo", "name": "api", "expected_uid": "deployment-1",
-        "changes": [{
-            "type": "set_image", "container_type": "container", "container": "api",
-            "expected_image": "api:broken", "image": "api:v2",
-        }],
+        "kind": "Deployment",
+        "namespace": "demo",
+        "name": "api",
+        "expected_uid": "deployment-1",
+        "changes": [
+            {
+                "type": "set_image",
+                "container_type": "container",
+                "container": "api",
+                "expected_image": "api:broken",
+                "image": "api:v2",
+            }
+        ],
     }
     engine = ReActAgentEngine(
-        FakeStreamingLlmClient([
-            [{
-                "type": "tool_call", "call_id": "guessed", "tool": "patch_workload", "arguments": arguments,
-            }],
+        FakeStreamingLlmClient(
             [
-                {"type": "delta", "text": "I could not authorize the guessed target."},
-                {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 5, "tool_calls": 1}},
-            ],
-        ]),
+                [
+                    {
+                        "type": "tool_call",
+                        "call_id": "guessed",
+                        "tool": "patch_workload",
+                        "arguments": arguments,
+                    }
+                ],
+                [
+                    {"type": "delta", "text": "I could not authorize the guessed target."},
+                    {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 5, "tool_calls": 1}},
+                ],
+            ]
+        ),
         FakeToolClient(),
         react_policy(max_steps=2, max_tool_calls=1),
         react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1702"),
@@ -3424,12 +3506,15 @@ async def test_react_engine_rejects_patch_without_resolved_pod_evidence_before_a
         confirmation_required_for_write=True,
     )
 
-    chunks = [chunk async for chunk in engine.run(
-        [Message(role="user", content="Repair the image.")],
-        llm_config(),
-        [{"name": "patch_workload"}],
-        asyncio.Event(),
-    )]
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Repair the image.")],
+            llm_config(),
+            [{"name": "patch_workload"}],
+            asyncio.Event(),
+        )
+    ]
 
     result = next(chunk for chunk in chunks if chunk["type"] == "tool_result")
     assert result["result"]["data"]["code"] == "REMEDIATION_TARGET_NOT_RESOLVED"
@@ -3439,33 +3524,51 @@ async def test_react_engine_rejects_patch_without_resolved_pod_evidence_before_a
 @pytest.mark.asyncio
 async def test_react_engine_records_verified_image_patch_after_fresh_read(monkeypatch):
     arguments = {
-        "kind": "Deployment", "namespace": "demo", "name": "api", "expected_uid": "deployment-1",
-        "changes": [{
-            "type": "set_image", "container_type": "container", "container": "api",
-            "expected_image": "api:broken", "image": "api:v2",
-        }],
+        "kind": "Deployment",
+        "namespace": "demo",
+        "name": "api",
+        "expected_uid": "deployment-1",
+        "changes": [
+            {
+                "type": "set_image",
+                "container_type": "container",
+                "container": "api",
+                "expected_image": "api:broken",
+                "image": "api:v2",
+            }
+        ],
     }
     pod_context = {
-        "schemaVersion": "acornops.model-context.v1", "tool": "get_resource", "status": "success",
+        "schemaVersion": "acornops.model-context.v1",
+        "tool": "get_resource",
+        "status": "success",
         "summary": "Resolved Pod owner.",
         "data": {
             "resource": {"kind": "Pod", "namespace": "demo", "name": "api-broken", "uid": "pod-1"},
             "ownership": {
                 "status": "resolved",
                 "remediationTarget": {
-                    "kind": "Deployment", "namespace": "demo", "name": "api",
+                    "kind": "Deployment",
+                    "namespace": "demo",
+                    "name": "api",
                     "uid": "deployment-1",
                 },
             },
             "remediationTarget": {
-                "kind": "Deployment", "namespace": "demo", "name": "api", "uid": "deployment-1",
-                "containers": [{"name": "api", "image": "api:broken"}], "initContainers": [],
+                "kind": "Deployment",
+                "namespace": "demo",
+                "name": "api",
+                "uid": "deployment-1",
+                "containers": [{"name": "api", "image": "api:broken"}],
+                "initContainers": [],
             },
         },
         "omissions": [],
     }
     write_context = {
-        "schemaVersion": "acornops.model-context.v1", "tool": "patch_workload", "status": "success",
+        "schemaVersion": "acornops.model-context.v1",
+        "tool": "patch_workload",
+        "status": "success",
         "summary": "Image patched.",
         "data": {
             "operationId": "operation-1",
@@ -3474,13 +3577,19 @@ async def test_react_engine_records_verified_image_patch_after_fresh_read(monkey
         "omissions": [],
     }
     verified_context = {
-        "schemaVersion": "acornops.model-context.v1", "tool": "get_resource", "status": "success",
+        "schemaVersion": "acornops.model-context.v1",
+        "tool": "get_resource",
+        "status": "success",
         "summary": "Deployment verified.",
         "data": {
             "resource": {"kind": "Deployment", "namespace": "demo", "name": "api", "uid": "deployment-1"},
             "remediationTarget": {
-                "kind": "Deployment", "namespace": "demo", "name": "api", "uid": "deployment-1",
-                "containers": [{"name": "api", "image": "api:v2"}], "initContainers": [],
+                "kind": "Deployment",
+                "namespace": "demo",
+                "name": "api",
+                "uid": "deployment-1",
+                "containers": [{"name": "api", "image": "api:v2"}],
+                "initContainers": [],
             },
         },
         "omissions": [],
@@ -3493,12 +3602,18 @@ async def test_react_engine_records_verified_image_patch_after_fresh_read(monkey
         async def call_tool(self, *_args, **_kwargs):
             context = self.contexts.pop(0)
             return {
-                "full_result": {}, "model_context": context,
+                "full_result": {},
+                "model_context": context,
                 "context_meta": {
-                    "schema_version": "v1", "strategy": "producer_projection",
-                    "original_bytes": 1, "context_bytes": 1, "truncated": False, "omissions": [],
+                    "schema_version": "v1",
+                    "strategy": "producer_projection",
+                    "original_bytes": 1,
+                    "context_bytes": 1,
+                    "truncated": False,
+                    "omissions": [],
                 },
-                "artifact_eligible": False, "is_error": False,
+                "artifact_eligible": False,
+                "is_error": False,
             }
 
     outcomes: list[tuple[str, str]] = []
@@ -3509,33 +3624,45 @@ async def test_react_engine_records_verified_image_patch_after_fresh_read(monkey
         lambda observed: outcomes.extend(observed),
     )
     streams = [
-        [{
-            "type": "tool_call", "call_id": "read-pod", "tool": "get_resource",
-            "arguments": {"kind": "Pod", "namespace": "demo", "name": "api-broken"},
-        }],
+        [
+            {
+                "type": "tool_call",
+                "call_id": "read-pod",
+                "tool": "get_resource",
+                "arguments": {"kind": "Pod", "namespace": "demo", "name": "api-broken"},
+            }
+        ],
         [{"type": "tool_call", "call_id": "patch", "tool": "patch_workload", "arguments": arguments}],
-        [{
-            "type": "tool_call", "call_id": "verify", "tool": "get_resource",
-            "arguments": {"kind": "Deployment", "namespace": "demo", "name": "api"},
-        }],
+        [
+            {
+                "type": "tool_call",
+                "call_id": "verify",
+                "tool": "get_resource",
+                "arguments": {"kind": "Deployment", "namespace": "demo", "name": "api"},
+            }
+        ],
         [
             {"type": "delta", "text": "Image repair verified."},
             {"type": "final", "usage": {"input_tokens": 5, "output_tokens": 5, "tool_calls": 3}},
         ],
     ]
     engine = ReActAgentEngine(
-        FakeStreamingLlmClient(streams), SequentialToolClient(),
+        FakeStreamingLlmClient(streams),
+        SequentialToolClient(),
         react_policy(max_steps=5, max_tool_calls=3),
         react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1703"),
         tool_capabilities={"get_resource": "read", "patch_workload": "write"},
     )
 
-    _ = [chunk async for chunk in engine.run(
-        [Message(role="user", content="Repair the image.")],
-        llm_config(),
-        [{"name": "get_resource"}, {"name": "patch_workload"}],
-        asyncio.Event(),
-    )]
+    _ = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Repair the image.")],
+            llm_config(),
+            [{"name": "get_resource"}, {"name": "patch_workload"}],
+            asyncio.Event(),
+        )
+    ]
 
     assert outcomes == [("patch_workload", "verified")]
 
@@ -3549,38 +3676,44 @@ def test_approval_summary_describes_agentv_service_restart_preconditions():
             "expected_active_state": "failed",
             "expected_sub_state": "failed",
         },
-    ) == (
-        "Restart systemd service nginx.service (expected failed/failed). "
-        "Reason: Recover failed ingress."
-    )
+    ) == ("Restart systemd service nginx.service (expected failed/failed). Reason: Recover failed ingress.")
 
 
 def test_approval_summary_fallback_handles_unknown_tools_and_missing_name():
-    assert build_approval_summary(
-        "external.write_action",
-        {"namespace": "demo", "payload": {"large": "blob"}},
-    ) == "Run external write action against namespace demo."
+    assert (
+        build_approval_summary(
+            "external.write_action",
+            {"namespace": "demo", "payload": {"large": "blob"}},
+        )
+        == "Run external write action against namespace demo."
+    )
 
 
 def test_approval_summary_preserves_zero_replica_scale():
-    assert build_approval_summary(
-        "scale_workload",
-        {"namespace": "demo", "name": "api", "kind": "Deployment", "replicas": 0},
-    ) == "Scale Deployment demo/api to 0 replicas."
+    assert (
+        build_approval_summary(
+            "scale_workload",
+            {"namespace": "demo", "name": "api", "kind": "Deployment", "replicas": 0},
+        )
+        == "Scale Deployment demo/api to 0 replicas."
+    )
 
 
 def test_approval_summary_surfaces_scale_safety_confirmations():
-    assert build_approval_summary(
-        "scale_workload",
-        {
-            "namespace": "demo",
-            "name": "api",
-            "kind": "Deployment",
-            "replicas": 0,
-            "confirm_scale_to_zero": True,
-            "confirm_hpa_override": True,
-        },
-    ) == "Scale (scale-to-zero confirmed; HPA override confirmed) Deployment demo/api to 0 replicas."
+    assert (
+        build_approval_summary(
+            "scale_workload",
+            {
+                "namespace": "demo",
+                "name": "api",
+                "kind": "Deployment",
+                "replicas": 0,
+                "confirm_scale_to_zero": True,
+                "confirm_hpa_override": True,
+            },
+        )
+        == "Scale (scale-to-zero confirmed; HPA override confirmed) Deployment demo/api to 0 replicas."
+    )
 
 
 def test_approval_summary_describes_structured_resource_patch_risk():
@@ -3631,12 +3764,14 @@ def test_approval_summary_redacts_workload_env_and_configmap_values():
             "kind": "Deployment",
             "namespace": "demo",
             "name": "api",
-            "changes": [{
-                "type": "set_env",
-                "container": "api",
-                "name": "LOG_LEVEL",
-                "value": "debug",
-            }],
+            "changes": [
+                {
+                    "type": "set_env",
+                    "container": "api",
+                    "name": "LOG_LEVEL",
+                    "value": "debug",
+                }
+            ],
         },
     )
     config_summary = build_approval_summary(
@@ -3663,12 +3798,14 @@ def test_approval_summary_keeps_patch_warning_before_truncated_details():
             "kind": "Deployment",
             "namespace": "demo",
             "name": "api",
-            "changes": [{
-                "type": "set_image",
-                "container": "api",
-                "expected_image": f"registry.example/{'a' * 180}:old",
-                "image": f"registry.example/{'b' * 180}:new",
-            }],
+            "changes": [
+                {
+                    "type": "set_image",
+                    "container": "api",
+                    "expected_image": f"registry.example/{'a' * 180}:old",
+                    "image": f"registry.example/{'b' * 180}:new",
+                }
+            ],
         },
     )
     assert "triggers a rollout" in summary
@@ -3682,12 +3819,14 @@ def test_approval_summary_removes_unicode_format_controls():
             "kind": "Deployment",
             "namespace": "demo",
             "name": "api",
-            "changes": [{
-                "type": "set_image",
-                "container": "api\u202egnp.exe",
-                "expected_image": "old:v1",
-                "image": "new:v1",
-            }],
+            "changes": [
+                {
+                    "type": "set_image",
+                    "container": "api\u202egnp.exe",
+                    "expected_image": "old:v1",
+                    "image": "new:v1",
+                }
+            ],
         },
     )
     assert "\u202e" not in summary
@@ -3709,8 +3848,9 @@ def test_approval_summary_describes_cronjob_template_effect_precisely():
 
 
 def test_approval_summary_bounds_unvalidated_patch_change_analysis():
-    changes = [{"type": "set_label", "scope": "resource", "key": f"key-{index}", "value": "value"}
-               for index in range(100)]
+    changes = [
+        {"type": "set_label", "scope": "resource", "key": f"key-{index}", "value": "value"} for index in range(100)
+    ]
     changes[10] = {"type": "set_service_selector", "key": "app", "value": "api"}
     summary = build_approval_summary(
         "patch_workload",
@@ -3732,10 +3872,23 @@ async def test_react_engine_resumes_after_approved_write_result():
     )
     tool_client = FakeToolClient()
     continuation = {
-        "llm_messages": [{"role": "user", "content": "Restart the workload."}],
+        "transcript": [
+            {"type": "user", "content": "Restart the workload."},
+            {
+                "type": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "call_id": "call-1",
+                        "name": "restart_workload",
+                        "arguments": {"namespace": "demo"},
+                    }
+                ],
+            },
+        ],
         "current_step": 0,
         "total_tool_calls": 1,
-        "duplicate_tool_call_counts": {"restart_workload:{\"namespace\":\"demo\"}": 1},
+        "duplicate_tool_call_counts": {'restart_workload:{"namespace":"demo"}': 1},
         "tool_calls": [
             {
                 "type": "tool_call",
@@ -3746,7 +3899,7 @@ async def test_react_engine_resumes_after_approved_write_result():
             }
         ],
         "next_tool_index": 0,
-        "tool_feedback_blocks": [],
+        "tool_results": [],
         "pending_tool_call": {"call_id": "call-1", "tool": "restart_workload", "arguments": {"namespace": "demo"}},
     }
     engine = ReActAgentEngine(
@@ -3778,14 +3931,21 @@ async def test_react_engine_resumes_after_approved_write_result():
 
     assert chunks[0]["type"] == "tool_result"
     assert any(chunk["type"] == "delta" and "Restart completed" in chunk["text"] for chunk in chunks)
-    follow_up_prompt = llm_client.calls[0]["messages"][-1]["content"]
-    assert "Live tool results:" in follow_up_prompt
-    assert "lead with the action that was completed" in follow_up_prompt
-    assert "Do not expand a narrow remediation request into a broad remediation runbook" in follow_up_prompt
-    assert (
-        "Do not ask the user to run kubectl, SSH, or shell commands while tool access can perform"
-        in follow_up_prompt
-    )
+    follow_up_transcript = llm_client.calls[0]["transcript"]
+    assert follow_up_transcript[-1] == {
+        "type": "tool_results",
+        "results": [
+            {
+                "call_id": "call-1",
+                "name": "restart_workload",
+                "result": {"status": "ok"},
+                "is_error": False,
+            }
+        ],
+    }
+    instruction = llm_client.calls[0]["runtime_instruction"]
+    assert "State what mutation completed" in instruction
+    assert "answer narrow remediation requests narrowly" in instruction
 
 
 @pytest.mark.asyncio

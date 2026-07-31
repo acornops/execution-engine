@@ -5,7 +5,6 @@ from execution_engine.models import (
     CommitRequest,
     ContextPackage,
     LoadedSkillSnapshot,
-    Message,
     SkillConfig,
     Timing,
     ToolApproval,
@@ -84,8 +83,7 @@ def build_terminal_approval_resume(
             result = {
                 "code": "WRITE_TOOL_OUTCOME_UNKNOWN",
                 "message": (
-                    "A previous execution attempt did not record a final outcome. "
-                    "Inspect the target before retrying."
+                    "A previous execution attempt did not record a final outcome. Inspect the target before retrying."
                 ),
             }
             is_error = True
@@ -118,9 +116,11 @@ def build_terminal_approval_resume(
     }
 
 
-def build_skill_catalog_messages(skills: SkillConfig | None) -> list[Message]:
+def build_skill_catalog_instruction(skills: SkillConfig | None) -> str | None:
+    """Build trusted, bounded skill-catalog guidance for the runtime instruction."""
+
     if not skills or not skills.entries:
-        return []
+        return None
 
     content_parts = [
         "Target troubleshooting skills available for this run.",
@@ -129,11 +129,13 @@ def build_skill_catalog_messages(skills: SkillConfig | None) -> list[Message]:
         "",
     ]
     for skill in sorted(skills.entries, key=lambda entry: (entry.name.casefold(), entry.ref)):
-        content_parts.extend([
-            f"- {skill.ref}: {skill.name}",
-            f"  Description: {skill.description}",
-        ])
-    return [Message(role="system", content="\n".join(content_parts))]
+        content_parts.extend(
+            [
+                f"- {skill.ref}: {skill.name}",
+                f"  Description: {skill.description}",
+            ]
+        )
+    return "\n".join(content_parts)
 
 
 def build_skill_loader_tool_spec(skills: SkillConfig | None) -> dict[str, object] | None:
@@ -161,7 +163,7 @@ def build_skill_loader_tool_spec(skills: SkillConfig | None) -> dict[str, object
     }
 
 
-def build_loaded_skill_context_message(skill: LoadedSkillSnapshot) -> Message:
+def build_loaded_skill_context_instruction(skill: LoadedSkillSnapshot) -> str:
     files = sorted(
         skill.files,
         key=lambda file: (0 if file.path == "SKILL.md" else 1, file.path),
@@ -174,11 +176,11 @@ def build_loaded_skill_context_message(skill: LoadedSkillSnapshot) -> Message:
     ]
     for file in files:
         content_parts.extend(["", f"[{file.path}]", file.content])
-    return Message(role="system", content="\n".join(content_parts))
+    return "\n".join(content_parts)
 
 
 def build_loaded_skill_result(skill: LoadedSkillSnapshot) -> dict[str, object]:
-    message = build_loaded_skill_context_message(skill)
+    instruction = build_loaded_skill_context_instruction(skill)
     return {
         "skill_ref": skill.skill_ref,
         "skill_id": skill.skill_id,
@@ -187,7 +189,7 @@ def build_loaded_skill_result(skill: LoadedSkillSnapshot) -> dict[str, object]:
         "file_count": skill.file_count,
         "total_bytes": skill.total_bytes,
         "content_hash": skill.content_hash,
-        "message": {"role": message.role, "content": message.content},
+        "message": {"content": instruction},
     }
 
 
@@ -243,30 +245,36 @@ def emit_skill_context_event(
         emit_event("skill_context_load_started", payload)
         return True
     if chunk_type == "skill_context_loaded":
-        emit_event("skill_context_loaded", {
-            key: value
-            for key, value in {
-                "skill_ref": skill_ref,
-                "skill_id": chunk.get("skill_id"),
-                "name": chunk.get("name") or skill_names_by_ref.get(skill_ref),
-                "file_count": chunk.get("file_count"),
-                "total_bytes": chunk.get("total_bytes"),
-                "content_hash": chunk.get("content_hash"),
-            }.items()
-            if value is not None
-        })
+        emit_event(
+            "skill_context_loaded",
+            {
+                key: value
+                for key, value in {
+                    "skill_ref": skill_ref,
+                    "skill_id": chunk.get("skill_id"),
+                    "name": chunk.get("name") or skill_names_by_ref.get(skill_ref),
+                    "file_count": chunk.get("file_count"),
+                    "total_bytes": chunk.get("total_bytes"),
+                    "content_hash": chunk.get("content_hash"),
+                }.items()
+                if value is not None
+            },
+        )
         return True
     if chunk_type == "skill_context_load_failed":
-        emit_event("skill_context_load_failed", {
-            key: value
-            for key, value in {
-                "skill_ref": skill_ref,
-                "name": chunk.get("name") or skill_names_by_ref.get(skill_ref),
-                "code": chunk.get("code"),
-                "message": chunk.get("message"),
-            }.items()
-            if value is not None
-        })
+        emit_event(
+            "skill_context_load_failed",
+            {
+                key: value
+                for key, value in {
+                    "skill_ref": skill_ref,
+                    "name": chunk.get("name") or skill_names_by_ref.get(skill_ref),
+                    "code": chunk.get("code"),
+                    "message": chunk.get("message"),
+                }.items()
+                if value is not None
+            },
+        )
         return True
     return False
 

@@ -48,7 +48,8 @@ class GatewayLlmClient:
         session_id: str,
         provider: str,
         model: str,
-        messages: List[Dict[str, str]],
+        runtime_instruction: str,
+        transcript: List[Dict[str, Any]],
         temperature: float,
         max_output_tokens: int | None,
         scope_type: str = "target",
@@ -74,7 +75,8 @@ class GatewayLlmClient:
             session_id: The session ID.
             provider: LLM provider (e.g., openai, anthropic).
             model: Specific model identifier.
-            messages: List of message objects.
+            runtime_instruction: The single trusted runtime instruction.
+            transcript: Provider-neutral user/assistant/tool transcript.
             temperature: Sampling temperature.
             max_output_tokens: Maximum tokens to generate. If None, provider defaults apply.
 
@@ -89,7 +91,8 @@ class GatewayLlmClient:
             "session_id": session_id,
             "provider": provider,
             "model": model,
-            "messages": messages,
+            "runtime_instruction": runtime_instruction,
+            "transcript": transcript,
             "temperature": temperature,
         }
         if scope_type != "target":

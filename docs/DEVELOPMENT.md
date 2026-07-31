@@ -69,7 +69,17 @@ task lint
 task unit-test
 task contracts:check
 task harness:check
+task keyless-eval
 ```
+
+`task keyless-eval` runs the manifest-selected provider-native agent scenarios
+with provider credential variables removed and TCP connections blocked. It
+prints machine-readable totals and per-category results, and fails when a
+scenario fails, skips, no longer collects, or falls outside the manifest. The
+measurement covers deterministic transcript continuity, multi-step execution,
+parallel cancellation, skill loading, guardrails, validation, write safety, and
+approval resume behavior. It does not measure live-provider availability or
+model answer quality.
 
 ## Documentation Drift Control
 

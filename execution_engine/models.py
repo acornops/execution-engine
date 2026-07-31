@@ -22,10 +22,13 @@ def utc_now() -> datetime:
     """Returns the current UTC time."""
     return datetime.now(UTC)
 
+
 # --- Incoming Requests ---
+
 
 class RunRequest(BaseModel):
     """Request model for starting a new run."""
+
     contract_version: Literal[2]
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
@@ -88,13 +91,16 @@ class RunRequest(BaseModel):
                 "message_id": EXAMPLE_MESSAGE_ID,
                 "requested_at": "2026-03-01T00:00:00Z",
             }
-        }
+        },
     }
+
 
 # --- Orchestrator Bootstrap ---
 
+
 class Scope(BaseModel):
     """Run scope information."""
+
     type: Literal["target", "workspace"] = "target"
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
     target_id: Optional[str] = Field(default=None, examples=[EXAMPLE_TARGET_ID])
@@ -144,8 +150,10 @@ class Scope(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+
 class Policy(BaseModel):
     """Execution policy for a run."""
+
     max_runtime_ms: int
     max_output_tokens: Optional[int] = None
     budget_cents: int
@@ -153,13 +161,17 @@ class Policy(BaseModel):
     max_tool_calls: int = 24
     max_duplicate_tool_calls: int = 2
 
+
 class ContextConfig(BaseModel):
     """Configuration for fetching conversation context."""
+
     endpoint: str
     max_context_tokens: int
 
+
 class ResourceBinding(BaseModel):
     """An exact prompt resource binding frozen by the control plane."""
+
     binding_id: str
     type: str
     resource_id: str
@@ -184,8 +196,10 @@ class ResourceBinding(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
+
 class ResourceConfig(BaseModel):
     """Prompt and binding integrity metadata for a Workflow run."""
+
     prompt_digest: str
     binding_digest: str
     resolved_at: str
@@ -217,28 +231,32 @@ class ResourceConfig(BaseModel):
             if binding.provider_data is not None:
                 value["providerData"] = binding.provider_data
             canonical.append(value)
-        actual = hashlib.sha256(
-            rfc8785.dumps(canonical)
-        ).hexdigest()
+        actual = hashlib.sha256(rfc8785.dumps(canonical)).hexdigest()
         if actual != self.binding_digest:
             raise ValueError("binding_digest does not match bindings")
         return self
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
+
 class GatewayConfig(BaseModel):
     """Configuration for the Execution Gateway."""
+
     url: str
     token: str
     request_timeout_ms: Optional[int] = None
 
+
 class ReasoningConfig(BaseModel):
     """Provider reasoning summary configuration frozen for a run."""
+
     summary_mode: Literal["off", "auto", "concise", "detailed"] = "off"
     effort: Literal["off", "low", "medium", "high"] = "off"
 
+
 class LLMConfig(BaseModel):
     """LLM provider and model configuration."""
+
     provider: str
     model: str
     temperature: float
@@ -246,8 +264,10 @@ class LLMConfig(BaseModel):
     reasoning: ReasoningConfig = Field(default_factory=ReasoningConfig)
     gateway: GatewayConfig
 
+
 class ToolConfig(BaseModel):
     """Tool registry and gateway configuration."""
+
     tool_registry_version: str
     allowed_tools: List[str]
     allowed_tool_refs: List[Dict[str, str]] = Field(default_factory=list)
@@ -260,18 +280,24 @@ class ToolConfig(BaseModel):
     approval_timeout_seconds: int = 300
     gateway: GatewayConfig
 
+
 class AssistantConfig(BaseModel):
     """Target-adapter or Agent instructions pinned by the control plane."""
+
     targetType: Optional[TargetType] = None
     instructions: str
 
+
 class SkillFile(BaseModel):
     """A single markdown file within a target troubleshooting skill bundle."""
+
     path: str
     content: str
 
+
 class SkillEntry(BaseModel):
     """One target troubleshooting skill bundle."""
+
     ref: str
     skill_id: str
     name: str
@@ -279,15 +305,19 @@ class SkillEntry(BaseModel):
     file_count: int = 0
     total_bytes: int = 0
 
+
 class SkillConfig(BaseModel):
     """Target troubleshooting skill bundles attached to a run snapshot."""
+
     contract_version: Literal[2] = 2
     entries: List[SkillEntry] = Field(default_factory=list)
     referenced_refs: List[str] = Field(default_factory=list, max_length=8)
     load_endpoint: Optional[str] = None
 
+
 class LoadedSkillSnapshot(BaseModel):
     """Frozen full skill snapshot loaded by skill ref for one run."""
+
     skill_ref: str
     skill_id: str
     name: str
@@ -298,8 +328,10 @@ class LoadedSkillSnapshot(BaseModel):
     total_bytes: int
     files: List[SkillFile] = Field(default_factory=list)
 
+
 class ExecutionSnapshot(BaseModel):
     """Authoritative snapshot of run configuration from the Orchestrator."""
+
     contract_version: Literal[2]
     scope: Scope
     policy: Policy
@@ -315,23 +347,28 @@ class ExecutionSnapshot(BaseModel):
     @model_validator(mode="after")
     def validate_resource_scope(self):
         if self.resources and any(
-            binding.workspace_id != self.scope.workspace_id
-            for binding in self.resources.bindings
+            binding.workspace_id != self.scope.workspace_id for binding in self.resources.bindings
         ):
             raise ValueError("resource bindings must match the run workspace")
         return self
 
     model_config = ConfigDict(extra="forbid")
 
+
 # --- Context Fetch ---
+
 
 class Message(BaseModel):
     """A single chat message."""
-    role: str = Field(examples=["user"])
+
+    role: Literal["user", "assistant"] = Field(examples=["user"])
     content: str = Field(examples=["Investigate CrashLoopBackOff for payments-api in prod namespace."])
+    model_config = ConfigDict(extra="forbid")
+
 
 class TargetInsightsSnippet(BaseModel):
     """Target Insights snippet metadata retrieved for a run."""
+
     entry_id: str
     title: str
     evidence_summary: str = ""
@@ -341,23 +378,30 @@ class TargetInsightsSnippet(BaseModel):
     score: float = 0
     updated_at: str = ""
 
+
 class TargetInsightsContext(BaseModel):
     """Target Insights retrieval metadata included with conversation context."""
+
     retrieval_status: str | None = None
     snippets: List[TargetInsightsSnippet] = Field(default_factory=list)
 
+
 class ContextPackage(BaseModel):
     """A collection of messages and metadata representing the conversation context."""
+
     messages: List[Message]
     summaries: List[Any] = []
     attachments: List[Any] = []
     resources: List[Dict[str, Any]] = []
     target_insights: TargetInsightsContext = Field(default_factory=TargetInsightsContext)
 
+
 # --- Events ---
+
 
 class Event(BaseModel):
     """A structured event emitted during execution."""
+
     schema_version: int = 1
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     seq: int
@@ -365,26 +409,35 @@ class Event(BaseModel):
     type: str = Field(examples=["run_started"])
     payload: Dict[str, Any]
 
+
 class EventBatch(BaseModel):
     """A batch of events to be sent to the Orchestrator."""
+
     events: List[Event]
+
 
 # --- Commit ---
 
+
 class Usage(BaseModel):
     """Token usage and tool call counts."""
+
     input_tokens: int
     output_tokens: int
     tool_calls: int = 0
     reasoning_tokens: Optional[int] = None
 
+
 class Timing(BaseModel):
     """Timing information for a run."""
+
     started_at: datetime
     ended_at: datetime
 
+
 class CommitRequest(BaseModel):
     """Request model for committing run results to the Orchestrator."""
+
     status: str = Field(examples=["completed"])
     assistant_message: Optional[Dict[str, Any]] = None
     usage: Usage
@@ -414,34 +467,45 @@ class CommitRequest(BaseModel):
         }
     }
 
+
 # --- Gateway Streaming ---
+
 
 class GatewayStreamDelta(BaseModel):
     """A token delta from the LLM gateway."""
+
     type: Literal["delta"]
     text: str
 
+
 class GatewayStreamToolCall(BaseModel):
     """A tool call requested by the LLM."""
+
     type: Literal["tool_call"]
     call_id: str = Field(min_length=1, max_length=256)
     tool: str = Field(min_length=1, max_length=128)
     arguments: Dict[str, Any]
 
+
 class GatewayStreamReasoningSummaryDelta(BaseModel):
     """A provider-generated reasoning summary delta from the LLM gateway."""
+
     type: Literal["reasoning_summary_delta"]
     text: str
     provider: str
 
+
 class GatewayStreamReasoningSummaryCompleted(BaseModel):
     """A completed provider-generated reasoning summary from the LLM gateway."""
+
     type: Literal["reasoning_summary_completed"]
     text: str
     provider: str
 
+
 class GatewayStreamReasoningSummaryUnavailable(BaseModel):
     """A non-terminal event explaining why summaries are unavailable."""
+
     type: Literal["reasoning_summary_unavailable"]
     provider: str
     reason: Literal[
@@ -451,22 +515,29 @@ class GatewayStreamReasoningSummaryUnavailable(BaseModel):
         "provider_omitted",
     ]
 
+
 class GatewayStreamFinal(BaseModel):
     """The final response from the LLM gateway containing usage info."""
+
     type: Literal["final"]
     usage: Usage
 
+
 class GatewayStreamError(BaseModel):
     """An error response from the LLM gateway."""
+
     type: Literal["error"]
     code: str
     message: str
     retryable: bool
 
+
 # --- Tool Gateway ---
+
 
 class ToolCallRequest(BaseModel):
     """Request to the Tool Gateway to execute a tool."""
+
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
     scope: Dict[str, Literal["target", "workspace"]] = Field(default_factory=lambda: {"type": "target"})
@@ -502,24 +573,30 @@ class ToolCallRequest(BaseModel):
         }
     }
 
+
 class ToolCallResponse(BaseModel):
     """Response from the Tool Gateway after executing a tool."""
+
     full_result: Any
     model_context: Any
     context_meta: Dict[str, Any]
     artifact_eligible: bool = False
     is_error: bool = False
 
+
 class ToolApprovalRequest(BaseModel):
     """Request to create a human approval interrupt for a write tool call."""
+
     toolCallId: str
     toolName: str
     toolRef: Dict[str, str]
     summary: str | None = None
     arguments: Dict[str, Any] = {}
 
+
 class ToolApproval(BaseModel):
     """Approval state returned by the orchestrator."""
+
     id: str
     runId: str
     workspaceId: str
@@ -541,12 +618,15 @@ class ToolApproval(BaseModel):
     toolResultIsError: bool | None = None
     expiresAt: str
 
+
 class ToolApprovalExecutionStarted(BaseModel):
     approval: ToolApproval
     approvalReceipt: str
 
+
 class RunContinuation(BaseModel):
     """Persisted ReAct loop state used to resume after a write approval."""
+
     runId: str
     approvalId: str
     schemaVersion: int = 1

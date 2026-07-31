@@ -16,27 +16,40 @@ from execution_engine.agent.tool_context import (
 
 def test_approval_continuation_preserves_pending_verification_without_synthetic_evidence_message():
     pending = [{"tool": "patch_workload", "operation_id": "operation-1"}]
+    transcript = [
+        {"type": "user", "content": "Fix the image."},
+        {
+            "type": "assistant",
+            "content": [
+                {
+                    "type": "tool_call",
+                    "call_id": "call-1",
+                    "name": "patch_workload",
+                    "arguments": {},
+                }
+            ],
+        },
+    ]
     state = build_tool_continuation_state(
-        llm_messages=[
-            {"role": "user", "content": "Fix the image."},
-            {"role": "user", "content": "evidence", "_acornops_internal": "tool_evidence"},
-        ],
+        transcript=transcript,
         current_step=2,
         total_tool_calls=3,
         duplicate_tool_call_counts={},
         tool_calls=[],
         next_tool_index=0,
-        tool_feedback_blocks=[],
+        tool_results=[],
         evidence_ledger=[],
         evidence_omitted=0,
         pending_verifications=pending,
         loaded_skill_refs=set(),
         loaded_skill_bytes=0,
+        loaded_skill_instructions=[],
         pending_tool_call={"tool": "patch_workload"},
     )
 
     assert state["pending_verifications"] == pending
-    assert state["llm_messages"] == [{"role": "user", "content": "Fix the image."}]
+    assert state["transcript"] == transcript
+    assert state["tool_results"] == []
 
 
 def test_structural_compaction_returns_valid_bounded_data_without_prefix_slicing():
@@ -76,9 +89,12 @@ def test_structural_compaction_normalizes_non_finite_numbers_to_strict_json():
 
 def test_bounded_producer_context_is_not_compacted_again():
     source = {
-        "schemaVersion": "acornops.model-context.v1", "tool": "get_resource_logs",
-        "status": "success", "summary": "Read logs.",
-        "data": {"logExcerpt": "🙂" * 2000}, "omissions": [],
+        "schemaVersion": "acornops.model-context.v1",
+        "tool": "get_resource_logs",
+        "status": "success",
+        "summary": "Read logs.",
+        "data": {"logExcerpt": "🙂" * 2000},
+        "omissions": [],
     }
     assert json_bytes(source) <= MAX_RESULT_CONTEXT_BYTES
     assert compact_tool_context(source) is source
@@ -107,23 +123,39 @@ def test_evidence_ledger_replaces_superseded_resource_reads():
         "data": {"resource": {"kind": "Pod", "namespace": "default", "name": "api-1"}},
     }
     key = evidence_key("get_resource", arguments, first_context)
-    ledger, omitted = merge_evidence([], [{
-        "key": key, "tool": "get_resource", "arguments": arguments,
-        "is_error": False, "protected": False, "context": first_context,
-    }])
-    ledger, omitted = merge_evidence(ledger, [{
-        "key": key, "tool": "get_resource", "arguments": arguments,
-        "is_error": False, "protected": False, "context": second_context,
-    }])
+    ledger, omitted = merge_evidence(
+        [],
+        [
+            {
+                "key": key,
+                "tool": "get_resource",
+                "arguments": arguments,
+                "is_error": False,
+                "protected": False,
+                "context": first_context,
+            }
+        ],
+    )
+    ledger, omitted = merge_evidence(
+        ledger,
+        [
+            {
+                "key": key,
+                "tool": "get_resource",
+                "arguments": arguments,
+                "is_error": False,
+                "protected": False,
+                "context": second_context,
+            }
+        ],
+    )
     assert omitted == 0
     assert len(ledger) == 1
     assert ledger[0]["context"]["status"] == "Running"
 
 
 def test_resource_identity_deduplicates_equivalent_read_arguments():
-    context = {
-        "data": {"resource": {"kind": "Pod", "namespace": "default", "name": "api-1"}}
-    }
+    context = {"data": {"resource": {"kind": "Pod", "namespace": "default", "name": "api-1"}}}
     assert evidence_key("get_resource", {"name": "api-1"}, context) == evidence_key(
         "get_resource", {"name": "api-1", "namespace": "default"}, context
     )
@@ -142,15 +174,25 @@ def test_get_resource_observation_is_protected_as_latest_verification():
 
 def test_evidence_ledger_preserves_protected_write_receipt_when_evicting():
     protected = {
-        "key": "patch:1", "tool": "patch_workload", "arguments": {},
-        "is_error": False, "protected": True, "protection": "write_receipt",
+        "key": "patch:1",
+        "tool": "patch_workload",
+        "arguments": {},
+        "is_error": False,
+        "protected": True,
+        "protection": "write_receipt",
         "context": {"data": {"operationId": "op-1", "payload": "p" * 10000}},
     }
-    noisy = [{
-        "key": f"read:{index}", "tool": "get_resource", "arguments": {"name": str(index)},
-        "is_error": False, "protected": False,
-        "context": {"payload": "x" * 10000},
-    } for index in range(10)]
+    noisy = [
+        {
+            "key": f"read:{index}",
+            "tool": "get_resource",
+            "arguments": {"name": str(index)},
+            "is_error": False,
+            "protected": False,
+            "context": {"payload": "x" * 10000},
+        }
+        for index in range(10)
+    ]
     ledger, omitted = merge_evidence([], [protected, *noisy])
     assert omitted > 0
     assert any(entry["key"] == "patch:1" for entry in ledger)
@@ -158,11 +200,18 @@ def test_evidence_ledger_preserves_protected_write_receipt_when_evicting():
 
 
 def test_evidence_ledger_keeps_only_latest_protected_observation_per_class():
-    errors = [{
-        "key": f"error:{index}", "tool": "get_resource", "arguments": {},
-        "is_error": True, "protected": True, "protection": "error",
-        "context": {"code": f"ERROR_{index}", "payload": "x" * 12000},
-    } for index in range(8)]
+    errors = [
+        {
+            "key": f"error:{index}",
+            "tool": "get_resource",
+            "arguments": {},
+            "is_error": True,
+            "protected": True,
+            "protection": "error",
+            "context": {"code": f"ERROR_{index}", "payload": "x" * 12000},
+        }
+        for index in range(8)
+    ]
     ledger, omitted = merge_evidence([], errors)
     assert omitted > 0
     assert any(entry["key"] == "error:7" for entry in ledger)
@@ -170,16 +219,33 @@ def test_evidence_ledger_keeps_only_latest_protected_observation_per_class():
 
 
 def test_evidence_ledger_keeps_cumulative_omission_notice():
-    noisy = [{
-        "key": f"read:{index}", "tool": "get_resource", "arguments": {"name": str(index)},
-        "is_error": False, "protected": False, "context": {"payload": "x" * 10000},
-    } for index in range(10)]
+    noisy = [
+        {
+            "key": f"read:{index}",
+            "tool": "get_resource",
+            "arguments": {"name": str(index)},
+            "is_error": False,
+            "protected": False,
+            "context": {"payload": "x" * 10000},
+        }
+        for index in range(10)
+    ]
     ledger, omitted = merge_evidence([], noisy)
     assert omitted > 0
-    _, later_omitted = merge_evidence(ledger, [{
-        "key": "latest", "tool": "get_resource", "arguments": {"name": "latest"},
-        "is_error": False, "protected": False, "context": {"status": "ok"},
-    }], omitted)
+    _, later_omitted = merge_evidence(
+        ledger,
+        [
+            {
+                "key": "latest",
+                "tool": "get_resource",
+                "arguments": {"name": "latest"},
+                "is_error": False,
+                "protected": False,
+                "context": {"status": "ok"},
+            }
+        ],
+        omitted,
+    )
     assert later_omitted >= omitted
 
 
@@ -194,7 +260,7 @@ def _generated_json(rng: random.Random, depth: int = 0):
         if leaf == 2:
             return rng.randint(-(10**12), 10**12)
         if leaf == 3:
-            return rng.uniform(-10**9, 10**9)
+            return rng.uniform(-(10**9), 10**9)
         alphabet = "abcXYZ09🙂界\n"
         length = rng.choice([0, 1, 16, 256, 4096, 20000])
         return "".join(rng.choice(alphabet) for _ in range(length))

@@ -5,9 +5,8 @@ from typing import Any, AsyncGenerator, Dict, List
 from execution_engine.agent.skill_loading import (
     SkillLoader,
     SkillLoadState,
-    load_requested_skill_contexts,
+    resolve_skill_call,
 )
-from execution_engine.skill_constants import INTERNAL_LOAD_TARGET_SKILL_TOOL
 
 
 def native_tool_instruction(native_tools: List[Dict[str, Any]] | None) -> str | None:
@@ -40,23 +39,19 @@ def referenced_tool_instruction(tool_names: List[str]) -> str | None:
 
 async def preload_referenced_skills(
     skill_refs: List[str],
-    messages: List[Dict[str, str]],
     state: SkillLoadState,
     skill_loader: SkillLoader | None,
     max_skill_loads: int,
     max_loaded_skill_bytes: int,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Loads explicitly referenced skills before the first model request."""
-    calls = [
-        {"tool": INTERNAL_LOAD_TARGET_SKILL_TOOL, "arguments": {"skill_ref": skill_ref}}
-        for skill_ref in skill_refs
-    ]
-    async for event in load_requested_skill_contexts(
-        calls,
-        messages,
-        state,
-        skill_loader=skill_loader,
-        max_skill_loads=max_skill_loads,
-        max_loaded_skill_bytes=max_loaded_skill_bytes,
-    ):
-        yield event
+    for skill_ref in skill_refs:
+        outcome = await resolve_skill_call(
+            {"skill_ref": skill_ref},
+            state,
+            skill_loader=skill_loader,
+            max_skill_loads=max_skill_loads,
+            max_loaded_skill_bytes=max_loaded_skill_bytes,
+        )
+        for event in outcome.events:
+            yield event

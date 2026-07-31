@@ -1,7 +1,7 @@
 {
   "repo": "execution-engine",
   "version": 1,
-  "executionContractVersion": 2,
+  "executionContractVersion": 3,
   "runtimeDependencies": ["control-plane", "llm-gateway"],
   "counterparts": {
     "control-plane": {
@@ -91,7 +91,8 @@
         "session_id",
         "provider",
         "model",
-        "messages",
+        "runtime_instruction",
+        "transcript",
         "temperature",
         "max_output_tokens",
         "reasoning",
@@ -109,6 +110,13 @@
         "final",
         "error"
       ],
+      "streamToolCallFields": [
+        "call_id",
+        "tool",
+        "arguments",
+        "provider_state?"
+      ],
+      "providerContinuationState": "Opaque same-provider continuation metadata is namespaced, JSON-compatible, capped at 32768 bytes, excluded from public run events and normal logs, and persisted only for provider continuation.",
       "localDeterministicStreamEnv": "LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES",
       "toolCallRequestFields": [
         "run_id",

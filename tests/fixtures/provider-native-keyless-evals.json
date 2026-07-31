@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "name": "execution-engine-provider-native-transcript",
+  "minimum_scenarios": 29,
+  "suites": [
+    {
+      "id": "mixed-parallel-provider-state",
+      "category": "transcript_continuity",
+      "nodeid": "tests/test_react_transcript.py::test_mixed_parallel_turn_preserves_text_state_pairing_and_untrusted_result",
+      "min_cases": 1
+    },
+    {
+      "id": "parallel-cancellation",
+      "category": "cancellation",
+      "nodeid": "tests/test_react_transcript.py::test_cancellation_during_parallel_batch_stops_remaining_tool_calls",
+      "min_cases": 1
+    },
+    {
+      "id": "read-write-verify",
+      "category": "multi_step",
+      "nodeid": "tests/test_react_transcript.py::test_read_write_verify_builds_three_closed_exchanges",
+      "min_cases": 1
+    },
+    {
+      "id": "approval-mid-batch",
+      "category": "approval_resume",
+      "nodeid": "tests/test_react_transcript.py::test_approval_mid_batch_persists_provider_state_and_resumes_in_order",
+      "min_cases": 1
+    },
+    {
+      "id": "whole-exchange-compaction",
+      "category": "context_bounds",
+      "nodeid": "tests/test_react_transcript.py::test_compaction_removes_whole_closed_exchanges_and_retains_user",
+      "min_cases": 1
+    },
+    {
+      "id": "latest-user-compaction",
+      "category": "context_bounds",
+      "nodeid": "tests/test_react_transcript.py::test_compaction_can_remove_old_user_turn_but_never_latest_user",
+      "min_cases": 1
+    },
+    {
+      "id": "approval-already-succeeded",
+      "category": "approval_resume",
+      "nodeid": "tests/test_worker_approval_resume.py::test_terminal_approval_resume_never_requires_dispatch[approval_value0-allowed_tools0-None-False]",
+      "min_cases": 1
+    },
+    {
+      "id": "approval-outcome-unknown",
+      "category": "approval_resume",
+      "nodeid": "tests/test_worker_approval_resume.py::test_terminal_approval_resume_never_requires_dispatch[approval_value1-allowed_tools1-WRITE_TOOL_OUTCOME_UNKNOWN-True]",
+      "min_cases": 1
+    },
+    {
+      "id": "approval-tool-no-longer-allowed",
+      "category": "approval_resume",
+      "nodeid": "tests/test_worker_approval_resume.py::test_terminal_approval_resume_never_requires_dispatch[approval_value2-allowed_tools2-TOOL_NOT_ALLOWED_ON_RESUME-True]",
+      "min_cases": 1
+    },
+    {
+      "id": "approval-rejected",
+      "category": "approval_resume",
+      "nodeid": "tests/test_worker_approval_resume.py::test_terminal_approval_resume_never_requires_dispatch[approval_value3-allowed_tools3-TOOL_APPROVAL_REJECTED-True]",
+      "min_cases": 1
+    },
+    {
+      "id": "approval-expired",
+      "category": "approval_resume",
+      "nodeid": "tests/test_worker_approval_resume.py::test_terminal_approval_resume_never_requires_dispatch[approval_value4-allowed_tools4-TOOL_APPROVAL_EXPIRED-True]",
+      "min_cases": 1
+    },
+    {
+      "id": "approval-not-started",
+      "category": "approval_resume",
+      "nodeid": "tests/test_worker_approval_resume.py::test_not_started_approved_write_still_requires_claim_and_dispatch",
+      "min_cases": 1
+    },
+    {
+      "id": "worker-context-cancellation",
+      "category": "cancellation",
+      "nodeid": "tests/test_unit.py::test_worker_context_cancellation_emits_only_terminal_cancel_after_cancel",
+      "min_cases": 1
+    },
+    {
+      "id": "worker-stream-cancellation",
+      "category": "cancellation",
+      "nodeid": "tests/test_unit.py::test_worker_cancelled_commit_omits_partial_assistant_text",
+      "min_cases": 1
+    },
+    {
+      "id": "skill-and-tool-same-turn",
+      "category": "skill_loading",
+      "nodeid": "tests/test_unit.py::test_react_engine_loads_skill_before_same_turn_tool_calls",
+      "min_cases": 1
+    },
+    {
+      "id": "referenced-skill-preload",
+      "category": "skill_loading",
+      "nodeid": "tests/test_unit.py::test_react_engine_preloads_referenced_skill_and_names_exact_referenced_tool",
+      "min_cases": 1
+    },
+    {
+      "id": "duplicate-skill-load",
+      "category": "skill_loading",
+      "nodeid": "tests/test_unit.py::test_react_engine_dedupes_repeated_skill_loads_without_duplicate_context",
+      "min_cases": 1
+    },
+    {
+      "id": "skill-step-limit-finalization",
+      "category": "skill_loading",
+      "nodeid": "tests/test_unit.py::test_react_engine_synthesizes_final_after_skill_load_step_limit",
+      "min_cases": 1
+    },
+    {
+      "id": "malformed-skill-call",
+      "category": "skill_loading",
+      "nodeid": "tests/test_unit.py::test_react_engine_handles_malformed_skill_loader_arguments_without_crashing",
+      "min_cases": 1
+    },
+    {
+      "id": "skill-byte-budget",
+      "category": "skill_loading",
+      "nodeid": "tests/test_unit.py::test_react_engine_skill_byte_budget_failure_closes_same_turn_tools",
+      "min_cases": 1
+    },
+    {
+      "id": "idle-gateway-cancellation",
+      "category": "cancellation",
+      "nodeid": "tests/test_unit.py::test_react_engine_stream_iteration_stops_while_gateway_is_idle",
+      "min_cases": 1
+    },
+    {
+      "id": "tool-call-budget",
+      "category": "guardrails",
+      "nodeid": "tests/test_unit.py::test_react_engine_limits_tool_budget_to_remaining_calls",
+      "min_cases": 1
+    },
+    {
+      "id": "unknown-write-outcome",
+      "category": "write_safety",
+      "nodeid": "tests/test_unit.py::test_react_engine_stops_after_unknown_write_outcome_without_approval",
+      "min_cases": 1
+    },
+    {
+      "id": "malformed-write-self-correction",
+      "category": "validation",
+      "nodeid": "tests/test_unit.py::test_react_engine_rejects_malformed_write_before_approval_then_self_corrects",
+      "min_cases": 1
+    },
+    {
+      "id": "remediation-precondition",
+      "category": "validation",
+      "nodeid": "tests/test_unit.py::test_react_engine_rejects_patch_without_resolved_pod_evidence_before_approval",
+      "min_cases": 1
+    },
+    {
+      "id": "verified-write",
+      "category": "write_safety",
+      "nodeid": "tests/test_unit.py::test_react_engine_records_verified_image_patch_after_fresh_read",
+      "min_cases": 1
+    },
+    {
+      "id": "approved-write-resume",
+      "category": "approval_resume",
+      "nodeid": "tests/test_unit.py::test_react_engine_resumes_after_approved_write_result",
+      "min_cases": 1
+    },
+    {
+      "id": "duplicate-call-guardrail",
+      "category": "guardrails",
+      "nodeid": "tests/test_unit.py::test_react_engine_blocks_repeated_identical_tool_calls",
+      "min_cases": 1
+    },
+    {
+      "id": "runtime-limit-finalization",
+      "category": "guardrails",
+      "nodeid": "tests/test_unit.py::test_react_engine_uses_guardrail_final_turn_when_runtime_limit_is_hit",
+      "min_cases": 1
+    }
+  ]
+}
