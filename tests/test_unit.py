@@ -223,7 +223,6 @@ async def test_run_registry_persists_workspace_workflow_identity_for_idempotency
         executor_role="specialist",
         parent_run_id="coordinator-root-1",
         agent_id="agent-cluster-triage",
-        agent_version=4,
         trigger_id="trigger-manual-1",
     )
 
@@ -239,7 +238,6 @@ async def test_run_registry_persists_workspace_workflow_identity_for_idempotency
     assert persisted.executor_role == "specialist"
     assert persisted.parent_run_id == "coordinator-root-1"
     assert persisted.agent_id == "agent-cluster-triage"
-    assert persisted.agent_version == 4
     assert persisted.trigger_id == "trigger-manual-1"
 
     recovered_registry = RunRegistry(max_concurrent_runs=10, durability_store=store)
@@ -257,7 +255,6 @@ async def test_run_registry_persists_workspace_workflow_identity_for_idempotency
         executor_role="specialist",
         parent_run_id="coordinator-root-1",
         agent_id="agent-cluster-triage",
-        agent_version=4,
         trigger_id="trigger-manual-1",
     )
 
@@ -282,9 +279,33 @@ async def test_run_registry_persists_workspace_workflow_identity_for_idempotency
             executor_role="specialist",
             parent_run_id="different-root",
             agent_id="agent-cluster-triage",
-            agent_version=4,
             trigger_id="trigger-manual-1",
         )
+
+
+@pytest.mark.asyncio
+async def test_run_registry_persists_agent_chat_identity_without_workflow_fields():
+    store = durability_store()
+    registry = RunRegistry(max_concurrent_runs=10, durability_store=store)
+    state, created = await registry.get_or_create(
+        EXAMPLE_WORKSPACE_ID,
+        None,
+        None,
+        "agent-conversation-1",
+        "run-agent-chat-1",
+        EXAMPLE_MESSAGE_ID,
+        scope_type="agent_chat",
+        agent_id="agent-incident-analyst",
+    )
+
+    assert created is True
+    assert state.scope_type == "agent_chat"
+    assert state.agent_id == "agent-incident-analyst"
+    persisted = store.get_run(state.run_id)
+    assert persisted is not None
+    assert persisted.scope_type == "agent_chat"
+    assert persisted.workflow_id is None
+    assert persisted.target_id is None
 
 
 def test_production_config_rejects_default_tokens_and_redis():
@@ -1098,6 +1119,7 @@ async def test_run_registry_cleans_terminal_entries_after_ttl():
 def run_payload(run_id: str) -> dict[str, object]:
     return {
         "contract_version": 2,
+        "scope_type": "target",
         "run_id": run_id,
         "workspace_id": EXAMPLE_WORKSPACE_ID,
         "target_id": EXAMPLE_TARGET_ID,
@@ -1116,6 +1138,26 @@ def test_run_request_rejects_v1_and_unknown_compatibility_fields():
         RunRequest.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("agent_id", "agent-1"),
+        ("workflow_id", "workflow-1"),
+        ("execution_id", "execution-1"),
+        ("workflow_session_id", "workflow-session-1"),
+        ("executor_role", "coordinator"),
+        ("parent_run_id", "parent-run-1"),
+        ("trigger_id", "trigger-1"),
+    ],
+)
+def test_run_request_rejects_agent_or_workflow_identity_for_target_scope(
+    field: str,
+    value: str,
+):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        RunRequest.model_validate({**run_payload("run-target-1"), field: value})
+
+
 def test_run_request_accepts_specialist_child_and_rejects_coordinator_parent():
     payload = {
         "contract_version": 2,
@@ -1130,7 +1172,6 @@ def test_run_request_accepts_specialist_child_and_rejects_coordinator_parent():
         "executor_role": "specialist",
         "parent_run_id": "run-root-1",
         "agent_id": "agent-1",
-        "agent_version": 3,
         "requested_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
     child = RunRequest.model_validate(payload)
@@ -1138,9 +1179,26 @@ def test_run_request_accepts_specialist_child_and_rejects_coordinator_parent():
 
     payload["executor_role"] = "coordinator"
     payload.pop("agent_id")
-    payload.pop("agent_version")
     with pytest.raises(ValidationError, match="forbid parent"):
         RunRequest.model_validate(payload)
+
+
+def test_run_request_accepts_agent_chat_and_rejects_target_or_workflow_fields():
+    payload = {
+        "contract_version": 2,
+        "scope_type": "agent_chat",
+        "run_id": "run-agent-chat-1",
+        "workspace_id": EXAMPLE_WORKSPACE_ID,
+        "session_id": "agent-conversation-1",
+        "message_id": EXAMPLE_MESSAGE_ID,
+        "agent_id": "agent-incident-analyst",
+        "requested_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    request = RunRequest.model_validate(payload)
+    assert request.scope_type == "agent_chat"
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        RunRequest.model_validate({**payload, "target_id": EXAMPLE_TARGET_ID, "target_type": "kubernetes"})
 
 
 @pytest.mark.asyncio
@@ -1160,9 +1218,8 @@ async def test_coordination_functions_never_dispatch_through_the_mcp_gateway():
     delegated = await client.call_tool(
         CoordinationToolClient.DELEGATE,
         {
-            "capabilityId": "target.diagnostics.read",
-            "targetBinding": {"targetId": "target-1", "targetType": "kubernetes"},
-            "taskPrompt": "Inspect the target",
+            "capabilityId": "infrastructure.diagnostics.read",
+            "taskPrompt": "Inspect the infrastructure",
             "required": True,
         },
         call_id="call-delegate-1",
@@ -1174,9 +1231,8 @@ async def test_coordination_functions_never_dispatch_through_the_mcp_gateway():
     orchestrator.create_delegation.assert_awaited_once_with(
         "run-manager-1",
         {
-            "capabilityId": "target.diagnostics.read",
-            "targetBinding": {"targetId": "target-1", "targetType": "kubernetes"},
-            "taskPrompt": "Inspect the target",
+            "capabilityId": "infrastructure.diagnostics.read",
+            "taskPrompt": "Inspect the infrastructure",
             "required": True,
             "toolCallId": "call-delegate-1",
         },
@@ -1184,13 +1240,47 @@ async def test_coordination_functions_never_dispatch_through_the_mcp_gateway():
     orchestrator.list_delegations.assert_awaited_once_with("run-manager-1")
     gateway.call_tool.assert_not_awaited()
 
-    await client.call_tool("target.inspect", {"targetId": "target-1"}, call_id="call-1")
+    await client.call_tool("records.list", {"limit": 1}, call_id="call-1")
     gateway.call_tool.assert_awaited_once_with(
-        "target.inspect",
-        {"targetId": "target-1"},
+        "records.list",
+        {"limit": 1},
         call_id="call-1",
         approval_receipt=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_coordination_functions_reject_unknown_arguments_before_orchestration():
+    gateway = MagicMock()
+    gateway.call_tool = AsyncMock()
+    orchestrator = MagicMock()
+    orchestrator.create_delegation = AsyncMock()
+    orchestrator.list_delegations = AsyncMock()
+    client = CoordinationToolClient(
+        gateway,
+        orchestrator,
+        "run-manager-1",
+        [CoordinationToolClient.DELEGATE, CoordinationToolClient.AWAIT],
+    )
+
+    delegated = await client.call_tool(
+        CoordinationToolClient.DELEGATE,
+        {
+            "capabilityId": "infrastructure.diagnostics.read",
+            "taskPrompt": "Inspect the infrastructure",
+            "resourceBinding": {"resourceId": "resource-1"},
+        },
+        call_id="call-delegate-1",
+    )
+    awaited = await client.call_tool(CoordinationToolClient.AWAIT, {"resourceId": "resource-1"})
+
+    assert delegated["is_error"] is True
+    assert delegated["full_result"]["code"] == "DELEGATION_REQUEST_INVALID"
+    assert awaited["is_error"] is True
+    assert awaited["full_result"]["code"] == "DELEGATION_REQUEST_INVALID"
+    orchestrator.create_delegation.assert_not_awaited()
+    orchestrator.list_delegations.assert_not_awaited()
+    gateway.call_tool.assert_not_awaited()
 
 
 def test_start_run_requires_dispatch_token(monkeypatch):
@@ -1554,6 +1644,7 @@ def execution_snapshot(run_id: str, *, allowed_tools: list[str] | None = None) -
     return ExecutionSnapshot(
         contract_version=2,
         scope=Scope(
+            type="target",
             workspace_id=EXAMPLE_WORKSPACE_ID,
             target_id=EXAMPLE_TARGET_ID,
             target_type="kubernetes",
@@ -1786,6 +1877,7 @@ async def test_worker_cancelled_exception_path_emits_one_terminal_cancel(monkeyp
 
 def react_scope(run_id: str) -> Scope:
     return Scope(
+        type="target",
         workspace_id=EXAMPLE_WORKSPACE_ID,
         target_id=EXAMPLE_TARGET_ID,
         target_type="kubernetes",
@@ -1911,7 +2003,7 @@ async def test_react_engine_loads_skill_before_same_turn_tool_calls():
             "file_count": 1,
             "total_bytes": 42,
             "content_hash": "sha256:abc",
-            "message": {"role": "system", "content": "Loaded target troubleshooting skill context.\nName: CNPG triage"},
+            "message": {"role": "system", "content": "Loaded skill context.\nName: CNPG triage"},
         }
 
     engine = ReActAgentEngine(
@@ -2034,7 +2126,7 @@ async def test_react_engine_dedupes_repeated_skill_loads_without_duplicate_conte
             "file_count": 1,
             "total_bytes": 42,
             "content_hash": "sha256:abc",
-            "message": {"role": "system", "content": "Loaded target troubleshooting skill context.\nName: CNPG triage"},
+            "message": {"role": "system", "content": "Loaded skill context.\nName: CNPG triage"},
         }
 
     engine = ReActAgentEngine(
@@ -2059,7 +2151,7 @@ async def test_react_engine_dedupes_repeated_skill_loads_without_duplicate_conte
     assert load_count == 1
     assert len(loaded_events) == 1
     runtime_instruction = llm_client.calls[-1]["runtime_instruction"]
-    assert runtime_instruction.count("Loaded target troubleshooting skill context") == 1
+    assert runtime_instruction.count("Loaded skill context") == 1
     second_results = llm_client.calls[-1]["transcript"][-1]["results"]
     assert second_results[0]["result"]["status"] == "already_loaded"
 
@@ -2091,7 +2183,7 @@ async def test_react_engine_synthesizes_final_after_skill_load_step_limit():
             "file_count": 1,
             "total_bytes": 42,
             "content_hash": "sha256:abc",
-            "message": {"role": "system", "content": "Loaded target troubleshooting skill context.\nName: CNPG triage"},
+            "message": {"role": "system", "content": "Loaded skill context.\nName: CNPG triage"},
         }
 
     engine = ReActAgentEngine(
@@ -2243,7 +2335,6 @@ async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
         workflow_session_id="workflow-session-1",
         executor_role="specialist",
         agent_id="agent-cluster-triage",
-        agent_version=4,
         trigger_id="trigger-manual-1",
     )
     engine = ReActAgentEngine(
@@ -2276,14 +2367,13 @@ async def test_react_engine_sends_workspace_workflow_scope_to_llm_gateway():
 
     assert any(chunk["type"] == "delta" for chunk in chunks)
     assert llm_client.calls[0]["scope_type"] == "workspace"
-    assert llm_client.calls[0]["target_id"] is None
-    assert llm_client.calls[0]["target_type"] is None
+    assert "target_id" not in llm_client.calls[0]
+    assert "target_type" not in llm_client.calls[0]
     assert llm_client.calls[0]["workflow_id"] == "workspace-tool-exposure-audit"
     assert llm_client.calls[0]["execution_id"] == "workflow-execution-1"
     assert llm_client.calls[0]["executor_role"] == "specialist"
     assert llm_client.calls[0]["workflow_session_id"] == "workflow-session-1"
     assert llm_client.calls[0]["agent_id"] == "agent-cluster-triage"
-    assert llm_client.calls[0]["agent_version"] == 4
     assert llm_client.calls[0]["trigger_id"] == "trigger-manual-1"
     assert "Built-in capabilities enabled for this run: Web Search." in llm_client.calls[0]["runtime_instruction"]
     assert llm_client.calls[0]["transcript"][0] == {
@@ -2332,8 +2422,6 @@ async def test_gateway_tool_client_sends_targetless_workspace_workflow_tool_call
         url="http://gateway.test",
         token="run-jwt",
         workspace_id=EXAMPLE_WORKSPACE_ID,
-        target_id=None,
-        target_type=None,
         run_id="run-workflow-1",
         allowed_tools=["mcp.tools.list"],
         scope_type="workspace",
@@ -2342,7 +2430,6 @@ async def test_gateway_tool_client_sends_targetless_workspace_workflow_tool_call
         workflow_session_id="workflow-session-1",
         executor_role="specialist",
         agent_id="agent-cluster-triage",
-        agent_version=4,
         trigger_id="trigger-manual-1",
     )
     tool_client._post_bounded = capture_post
@@ -2356,26 +2443,18 @@ async def test_gateway_tool_client_sends_targetless_workspace_workflow_tool_call
     assert result["is_error"] is False
     payload = captured_payloads[0]["json"]
     assert payload["scope"] == {"type": "workspace"}
-    assert payload["target_id"] is None
-    assert payload["target_type"] is None
+    assert "target_id" not in payload
+    assert "target_type" not in payload
     assert payload["workflow_id"] == "workspace-tool-exposure-audit"
     assert payload["execution_id"] == "workflow-execution-1"
     assert payload["executor_role"] == "specialist"
     assert payload["workflow_session_id"] == "workflow-session-1"
     assert payload["agent_id"] == "agent-cluster-triage"
-    assert payload["agent_version"] == 4
     assert payload["trigger_id"] == "trigger-manual-1"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("agent_id", "agent_version"),
-    [("agent-target-diagnostics", 1), (None, None)],
-)
-async def test_gateway_tool_client_serializes_only_bound_target_agent_identity(
-    agent_id: str | None,
-    agent_version: int | None,
-):
+async def test_gateway_tool_client_serializes_only_target_identity_for_target_scope():
     captured_payloads: list[dict[str, object]] = []
 
     async def capture_post(url: str, payload: dict[str, object]):
@@ -2414,9 +2493,6 @@ async def test_gateway_tool_client_serializes_only_bound_target_agent_identity(
             }
         },
         scope_type="target",
-        agent_id=agent_id,
-        agent_version=agent_version,
-        trigger_id="trigger-manual-1",
     )
     tool_client._post_bounded = capture_post
     try:
@@ -2433,17 +2509,41 @@ async def test_gateway_tool_client_serializes_only_bound_target_agent_identity(
     assert "scope" not in payload
     assert payload["target_id"] == EXAMPLE_TARGET_ID
     assert payload["target_type"] == "kubernetes"
-    if agent_id is None:
-        assert "agent_id" not in payload
-        assert "agent_version" not in payload
-    else:
-        assert payload["agent_id"] == agent_id
-        assert payload["agent_version"] == agent_version
+    assert "agent_id" not in payload
     assert "workflow_id" not in payload
     assert "execution_id" not in payload
     assert "workflow_session_id" not in payload
     assert "executor_role" not in payload
     assert "trigger_id" not in payload
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("agent_id", "agent-1"),
+        ("workflow_id", "workflow-1"),
+        ("execution_id", "execution-1"),
+        ("workflow_session_id", "workflow-session-1"),
+        ("executor_role", "coordinator"),
+        ("trigger_id", "trigger-1"),
+    ],
+)
+def test_gateway_tool_client_rejects_agent_or_workflow_identity_for_target_scope(
+    field: str,
+    value: str,
+):
+    with pytest.raises(ValueError, match="forbid Agent and Workflow"):
+        GatewayToolClient(
+            url="http://gateway.test",
+            token="run-jwt",
+            workspace_id=EXAMPLE_WORKSPACE_ID,
+            target_id=EXAMPLE_TARGET_ID,
+            target_type="kubernetes",
+            run_id="run-target-1",
+            allowed_tools=["list_resources"],
+            scope_type="target",
+            **{field: value},
+        )
 
 
 @pytest.mark.asyncio

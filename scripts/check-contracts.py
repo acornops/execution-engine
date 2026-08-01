@@ -79,13 +79,18 @@ for field in (
     "contract_version: Literal[2]",
     "run_id: str",
     "workspace_id: str",
-    'scope_type: Literal["target", "workspace"] = "target"',
-    "target_id: Optional[str] = Field(default=None, examples=[EXAMPLE_TARGET_ID])",
-    "target_type: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)",
-    "workflow_id: Optional[str] = None",
-    "execution_id: Optional[str] = None",
-    "workflow_session_id: Optional[str] = None",
-    'executor_role: Optional[Literal["coordinator", "specialist"]] = None',
+    "class TargetRunRequest",
+    'scope_type: Literal["target"]',
+    "target_id: str = Field(examples=[EXAMPLE_TARGET_ID])",
+    "target_type: TargetType = Field(examples=TARGET_TYPE_EXAMPLES)",
+    "class AgentChatRunRequest",
+    'scope_type: Literal["agent_chat"]',
+    "class WorkflowRunRequest",
+    'scope_type: Literal["workspace"]',
+    "workflow_id: str",
+    "execution_id: str",
+    "workflow_session_id: str",
+    'executor_role: Literal["coordinator", "specialist"]',
     "session_id: str",
     "message_id: str",
     "requested_at: datetime",
@@ -200,9 +205,9 @@ for field in GATEWAY_CONTRACT["streamResponseTypes"]:
 for tool_name in GATEWAY_CONTRACT["internalModelOnlyTools"]:
     expect_in(MANIFEST_TEXT, tool_name, "Manifest internal model-only tool")
     expect_in(SKILL_CONSTANTS_SOURCE, f'"{tool_name}"', "Internal model-only tool constant")
-    expect_in(SKILL_LOADING_SOURCE, "INTERNAL_LOAD_TARGET_SKILL_TOOL", "ReAct skill loader interception")
+    expect_in(SKILL_LOADING_SOURCE, "INTERNAL_LOAD_SKILL_TOOL", "ReAct skill loader interception")
     expect_in(REACT_ENGINE_SOURCE, "resolve_skill_call", "ReAct skill loader interception")
-    expect_in(WORKER_RUN_SUPPORT_SOURCE, "INTERNAL_LOAD_TARGET_SKILL_TOOL", "Skill loader spec builder")
+    expect_in(WORKER_RUN_SUPPORT_SOURCE, "INTERNAL_LOAD_SKILL_TOOL", "Skill loader spec builder")
 
 expect_in(
     DOC,

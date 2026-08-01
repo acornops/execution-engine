@@ -5,6 +5,7 @@ from execution_engine.models import (
     CommitRequest,
     ContextPackage,
     LoadedSkillSnapshot,
+    Scope,
     SkillConfig,
     Timing,
     ToolApproval,
@@ -12,9 +13,47 @@ from execution_engine.models import (
 )
 from execution_engine.orchestrator_client import EventManager, OrchestratorClient
 from execution_engine.run_registry import RunRegistry, RunState, RunStatus
-from execution_engine.skill_constants import INTERNAL_LOAD_TARGET_SKILL_TOOL
+from execution_engine.skill_constants import INTERNAL_LOAD_SKILL_TOOL
 from execution_engine.util.logging import bind_log_context, logger, reset_log_context
 from execution_engine.util.metrics import runs_cancelled_total
+
+
+def bootstrap_scope_matches(state: RunState, scope: Scope) -> bool:
+    """Require bootstrap identity to exactly match the accepted run scope."""
+    if (
+        scope.workspace_id != state.workspace_id
+        or scope.session_id != state.session_id
+        or scope.type != state.scope_type
+    ):
+        return False
+    if state.scope_type == "workspace":
+        return (
+            scope.workflow_id == state.workflow_id
+            and scope.execution_id == state.execution_id
+            and scope.workflow_session_id == state.workflow_session_id
+            and scope.executor_role == state.executor_role
+            and scope.parent_run_id == state.parent_run_id
+            and scope.agent_id == state.agent_id
+            and scope.trigger_id == state.trigger_id
+            and scope.target_id == state.target_id
+            and scope.target_type == state.target_type
+        )
+    if state.scope_type == "agent_chat":
+        return (
+            scope.agent_id == state.agent_id
+            and scope.target_id is None
+            and scope.target_type is None
+        )
+    return (
+        scope.target_id == state.target_id
+        and scope.target_type == state.target_type
+        and scope.agent_id is None
+        and scope.workflow_id is None
+        and scope.execution_id is None
+        and scope.workflow_session_id is None
+        and scope.executor_role is None
+        and scope.trigger_id is None
+    )
 
 
 def write_result_outcome_unknown(result: object, is_error: bool) -> bool:
@@ -123,8 +162,8 @@ def build_skill_catalog_instruction(skills: SkillConfig | None) -> str | None:
         return None
 
     content_parts = [
-        "Target troubleshooting skills available for this run.",
-        "Load full skill context only when it is relevant to the user's troubleshooting request.",
+        "Skills available for this run.",
+        "Load full skill context only when it is relevant to the user's request.",
         "Use the skill_ref value with the internal skill loader.",
         "",
     ]
@@ -144,9 +183,9 @@ def build_skill_loader_tool_spec(skills: SkillConfig | None) -> dict[str, object
 
     skill_refs = [skill.ref for skill in sorted(skills.entries, key=lambda entry: _skill_ref_sort_key(entry.ref))]
     return {
-        "name": INTERNAL_LOAD_TARGET_SKILL_TOOL,
+        "name": INTERNAL_LOAD_SKILL_TOOL,
         "description": (
-            "Load the full Markdown instructions for one relevant target troubleshooting skill "
+            "Load the full Markdown instructions for one relevant skill "
             "from this run's frozen skill catalog."
         ),
         "input_schema": {
@@ -169,7 +208,7 @@ def build_loaded_skill_context_instruction(skill: LoadedSkillSnapshot) -> str:
         key=lambda file: (0 if file.path == "SKILL.md" else 1, file.path),
     )
     content_parts = [
-        "Loaded target troubleshooting skill context.",
+        "Loaded skill context.",
         f"Name: {skill.name}",
         f"Description: {skill.description}",
         "Source: frozen run snapshot",
@@ -207,6 +246,8 @@ def build_skill_catalog_event_payload(skills: SkillConfig | None) -> dict[str, o
 
 
 def build_target_insights_context_event_payload(context: ContextPackage) -> dict[str, object] | None:
+    if context.target_insights is None:
+        return None
     snippets = context.target_insights.snippets
     retrieval_status = context.target_insights.retrieval_status
     if not snippets and not retrieval_status:

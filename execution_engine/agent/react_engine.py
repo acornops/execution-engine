@@ -171,30 +171,40 @@ class ReActAgentEngine(AgentEngine):
             loaded_skill_instructions=loaded_skill_instructions,
             loop_instruction=loop_instruction,
         )
+        gateway_options = {
+            "run_id": self.scope.run_id,
+            "workspace_id": self.scope.workspace_id,
+            "session_id": self.scope.session_id,
+            "provider": llm_config.provider,
+            "model": llm_config.model,
+            "runtime_instruction": runtime_instruction,
+            "transcript": request_transcript,
+            "temperature": llm_config.temperature,
+            "max_output_tokens": self.policy.max_output_tokens,
+            "scope_type": self.scope.type,
+            "reasoning": llm_config.reasoning.model_dump(),
+            "tools": tool_specs,
+            "native_tools": native_tools,
+        }
+        if self.scope.type == "target":
+            gateway_options["target_id"] = self.scope.target_id
+            gateway_options["target_type"] = self.scope.target_type
+        elif self.scope.type == "agent_chat":
+            gateway_options["agent_id"] = self.scope.agent_id
+        else:
+            gateway_options.update({
+                "workflow_id": self.scope.workflow_id,
+                "execution_id": self.scope.execution_id,
+                "workflow_session_id": self.scope.workflow_session_id,
+                "executor_role": self.scope.executor_role,
+            })
+            if self.scope.agent_id is not None:
+                gateway_options["agent_id"] = self.scope.agent_id
+            if self.scope.trigger_id is not None:
+                gateway_options["trigger_id"] = self.scope.trigger_id
         async for chunk in self._iterate_until_cancelled(
             self.llm_client.stream_generation(
-                run_id=self.scope.run_id,
-                workspace_id=self.scope.workspace_id,
-                target_id=self.scope.target_id,
-                target_type=self.scope.target_type,
-                session_id=self.scope.session_id,
-                provider=llm_config.provider,
-                model=llm_config.model,
-                runtime_instruction=runtime_instruction,
-                transcript=request_transcript,
-                temperature=llm_config.temperature,
-                max_output_tokens=self.policy.max_output_tokens,
-                scope_type=self.scope.type,
-                workflow_id=self.scope.workflow_id,
-                execution_id=self.scope.execution_id,
-                workflow_session_id=self.scope.workflow_session_id,
-                executor_role=self.scope.executor_role,
-                agent_id=self.scope.agent_id,
-                agent_version=self.scope.agent_version,
-                trigger_id=self.scope.trigger_id,
-                reasoning=llm_config.reasoning.model_dump(),
-                tools=tool_specs,
-                native_tools=native_tools,
+                **gateway_options,
             ),
             cancel_event,
         ):

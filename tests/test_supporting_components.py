@@ -27,7 +27,6 @@ from execution_engine.worker_tool_artifacts import (
     tool_result_event_summary,
 )
 from execution_engine.worker_tool_authority import (
-    build_authorized_target_tool_routing,
     build_authorized_tool_routing,
     platform_function_mappings,
     provider_native_tools,
@@ -67,66 +66,20 @@ def test_tool_routing_requires_an_exact_authorized_reference():
     }
 
 
-def test_target_tool_routing_requires_allowed_alias_and_reference():
-    routes = build_authorized_target_tool_routing(
-        ["read_target"],
-        [{"server_id": "targets", "tool_name": "read"}],
-        [{
-            "name": "read_target",
-            "target_routes": [
-                {
-                    "target_id": "vm-1",
-                    "target_type": "virtual_machine",
-                    "server_id": "targets",
-                    "tool_name": "read",
-                },
-                {
-                    "target_id": "vm-2",
-                    "target_type": "virtual_machine",
-                    "server_id": "unapproved",
-                    "tool_name": "read",
-                },
-            ],
-        }],
-    )
-
-    assert routes == {
-        "read_target": {
-            "vm-1": {
-                "target_id": "vm-1",
-                "target_type": "virtual_machine",
-                "server_id": "targets",
-                "tool_name": "read",
-            }
-        }
-    }
-
-
 def test_dynamic_target_write_approval_resolves_the_selected_exact_tool_ref():
     assert resolve_approval_tool_ref(
         "restart_target",
-        {"target_id": "vm-1", "service": "api"},
-        {},
         {
-            "restart_target": {
-                "vm-1": {
-                    "target_id": "vm-1",
-                    "target_type": "virtual_machine",
-                    "server_id": "targets",
-                    "tool_name": "restart",
-                }
-            }
+            "restart_target": {"server_id": "targets", "tool_name": "restart"}
         },
     ) == {"serverId": "targets", "toolName": "restart"}
 
 
-def test_dynamic_target_write_approval_rejects_an_unknown_target():
-    with pytest.raises(ValueError, match="does not have an authorized target route"):
+def test_dynamic_target_write_approval_requires_an_authorized_mcp_tool():
+    with pytest.raises(ValueError, match="does not have an authorized MCP reference"):
         resolve_approval_tool_ref(
             "restart_target",
-            {"target_id": "vm-2"},
             {},
-            {"restart_target": {}},
         )
 
 
@@ -376,10 +329,14 @@ async def test_gateway_tool_client_routes_target_id_argument(monkeypatch: pytest
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content.decode())
         assert payload["scope"] == {"type": "workspace"}
-        assert payload["target_id"] == "vm-1"
-        assert payload["target_type"] == "virtual_machine"
+        assert "target_id" not in payload
+        assert "target_type" not in payload
         assert payload["tool_ref"] == {"server_id": "targets", "tool_name": "read"}
-        assert payload["arguments"] == {"path": "/var/log/app.log"}
+        assert payload["arguments"] == {
+            "target_id": "vm-1",
+            "target_type": "virtual_machine",
+            "path": "/var/log/app.log",
+        }
         return httpx.Response(200, json={
             "full_result": {"ok": True},
             "model_context": {"ok": True},
@@ -407,19 +364,10 @@ async def test_gateway_tool_client_routes_target_id_argument(monkeypatch: pytest
         url="http://gateway",
         token="token",
         workspace_id="ws",
-        target_id=None,
-        target_type=None,
         run_id="run-1",
         allowed_tools=["read_target"],
-        target_tool_routes={
-            "read_target": {
-                "vm-1": {
-                    "target_id": "vm-1",
-                    "target_type": "virtual_machine",
-                    "server_id": "targets",
-                    "tool_name": "read",
-                }
-            }
+        tool_refs={
+            "read_target": {"server_id": "targets", "tool_name": "read"}
         },
         scope_type="workspace",
         workflow_id="workflow-1",
@@ -427,11 +375,14 @@ async def test_gateway_tool_client_routes_target_id_argument(monkeypatch: pytest
         workflow_session_id="session-1",
         executor_role="specialist",
         agent_id="agent-1",
-        agent_version=1,
     )
     try:
         response = await client.call_tool(
-            "read_target", {"target_id": "vm-1", "path": "/var/log/app.log"}
+            "read_target", {
+                "target_id": "vm-1",
+                "target_type": "virtual_machine",
+                "path": "/var/log/app.log",
+            }
         )
     finally:
         await client.close()

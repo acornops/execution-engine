@@ -43,8 +43,6 @@ class GatewayLlmClient:
         self,
         run_id: str,
         workspace_id: str,
-        target_id: str | None,
-        target_type: str | None,
         session_id: str,
         provider: str,
         model: str,
@@ -52,13 +50,14 @@ class GatewayLlmClient:
         transcript: List[Dict[str, Any]],
         temperature: float,
         max_output_tokens: int | None,
+        target_id: str | None = None,
+        target_type: str | None = None,
         scope_type: str = "target",
         workflow_id: str | None = None,
         execution_id: str | None = None,
         workflow_session_id: str | None = None,
         executor_role: str | None = None,
         agent_id: str | None = None,
-        agent_version: int | None = None,
         trigger_id: str | None = None,
         reasoning: Dict[str, str] | None = None,
         tools: List[Dict[str, Any]] | None = None,
@@ -70,8 +69,8 @@ class GatewayLlmClient:
         Args:
             run_id: The ID of the run.
             workspace_id: The workspace ID.
-            target_id: The target ID.
-            target_type: The target type.
+            target_id: The target ID for target-chat scope only.
+            target_type: The target type for target-chat scope only.
             session_id: The session ID.
             provider: LLM provider (e.g., openai, anthropic).
             model: Specific model identifier.
@@ -84,6 +83,28 @@ class GatewayLlmClient:
             A dictionary representing a stream chunk. Known chunk types include
             delta, final, error, and reasoning_summary_* provider summary events.
         """
+
+        if scope_type == "target":
+            if not target_id or not target_type:
+                raise ValueError("target LLM requests require target identity")
+            if any((workflow_id, execution_id, workflow_session_id, executor_role, agent_id, trigger_id)):
+                raise ValueError("target LLM requests forbid Agent and Workflow identity")
+        elif scope_type == "agent_chat":
+            if not agent_id:
+                raise ValueError("Agent-chat LLM requests require Agent identity")
+            if any((target_id, target_type, workflow_id, execution_id, workflow_session_id, executor_role, trigger_id)):
+                raise ValueError("Agent-chat LLM requests forbid target and Workflow identity")
+        elif scope_type == "workspace":
+            if not all((workflow_id, execution_id, workflow_session_id, executor_role)):
+                raise ValueError("Workflow LLM requests require Workflow execution identity")
+            if target_id or target_type:
+                raise ValueError("Workflow LLM requests forbid target identity")
+            if executor_role == "coordinator" and agent_id:
+                raise ValueError("Coordinator Workflow LLM requests forbid Agent identity")
+            if executor_role == "specialist" and not agent_id:
+                raise ValueError("Specialist Workflow LLM requests require Agent identity")
+        else:
+            raise ValueError(f"unsupported LLM request scope: {scope_type}")
 
         payload = {
             "run_id": run_id,
@@ -111,8 +132,6 @@ class GatewayLlmClient:
             payload["executor_role"] = executor_role
         if agent_id is not None:
             payload["agent_id"] = agent_id
-        if agent_version is not None:
-            payload["agent_version"] = agent_version
         if trigger_id is not None:
             payload["trigger_id"] = trigger_id
         if max_output_tokens is not None:

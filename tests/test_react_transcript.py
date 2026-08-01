@@ -77,6 +77,7 @@ def policy(**changes):
 
 def scope():
     return Scope(
+        type="target",
         workspace_id="workspace",
         target_id="target",
         target_type="kubernetes",

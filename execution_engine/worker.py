@@ -24,6 +24,7 @@ from execution_engine.util.metrics import (
 from execution_engine.worker_fallbacks import build_tool_only_fallback
 from execution_engine.worker_run_support import (
     approval_event_payload,
+    bootstrap_scope_matches,
     build_loaded_skill_result,
     build_skill_catalog_event_payload,
     build_skill_catalog_instruction,
@@ -147,29 +148,7 @@ class Worker:
                 finish_cancelled_run()
                 return
 
-            scope_matches = (
-                snapshot.scope.workspace_id == state.workspace_id
-                and snapshot.scope.session_id == state.session_id
-                and snapshot.scope.type == state.scope_type
-            )
-            if state.scope_type == "workspace":
-                scope_matches = scope_matches and (
-                    snapshot.scope.workflow_id == state.workflow_id
-                    and snapshot.scope.execution_id == state.execution_id
-                    and snapshot.scope.workflow_session_id == state.workflow_session_id
-                    and snapshot.scope.executor_role == state.executor_role
-                    and snapshot.scope.parent_run_id == state.parent_run_id
-                    and snapshot.scope.agent_id == state.agent_id
-                    and snapshot.scope.agent_version == state.agent_version
-                    and snapshot.scope.trigger_id == state.trigger_id
-                    and snapshot.scope.target_id == state.target_id
-                    and snapshot.scope.target_type == state.target_type
-                )
-            else:
-                scope_matches = scope_matches and (
-                    snapshot.scope.target_id == state.target_id
-                    and snapshot.scope.target_type == state.target_type
-                )
+            scope_matches = bootstrap_scope_matches(state, snapshot.scope)
 
             if not scope_matches:
 
@@ -191,7 +170,12 @@ class Worker:
                 context = None
                 emit_progress("approval_resume", "Resuming run from a write approval decision.")
             else:
-                emit_progress("context_fetch", "Fetching conversation and target context.")
+                emit_progress(
+                    "context_fetch",
+                    "Fetching conversation and target context."
+                    if state.scope_type == "target"
+                    else "Fetching conversation context.",
+                )
                 try:
                     context = await self.orchestrator_client.get_context(snapshot.context.endpoint, state.run_id)
                 except Exception as e:
@@ -209,16 +193,20 @@ class Worker:
                 if state.cancel_event.is_set():
                     finish_cancelled_run()
                     return
-                if target_insights_event_payload := build_target_insights_context_event_payload(context):
+                if state.scope_type == "target" and (
+                    target_insights_event_payload := build_target_insights_context_event_payload(context)
+                ):
                     emit_event("target_insights_context_retrieved", target_insights_event_payload)
                 emit_progress("context_ready", f"Context ready with {len(context.messages)} messages.")
 
-                emit_event("run_started", {
+                run_started_payload = {
                     "workspace_id": state.workspace_id,
-                    "target_id": state.target_id,
-                    "target_type": state.target_type,
                     "session_id": state.session_id
-                })
+                }
+                if state.scope_type == "target":
+                    run_started_payload["target_id"] = state.target_id
+                    run_started_payload["target_type"] = state.target_type
+                emit_event("run_started", run_started_payload)
 
             llm_client = GatewayLlmClient(
                 url=snapshot.llm.gateway.url,
@@ -231,7 +219,6 @@ class Worker:
                 tool_capabilities,
                 allowed_gateway_tools,
                 allowed_tool_names,
-                target_tool_routes,
             ) = (
                 build_runtime_tool_client(snapshot, state, self.orchestrator_client)
             )
@@ -297,7 +284,7 @@ class Worker:
                                     "code": "WRITE_TOOL_OUTCOME_UNKNOWN",
                                     "message": (
                                         "A previous execution attempt did not record a final outcome. "
-                                        "Inspect the target before retrying."
+                                        "Inspect the affected system before retrying."
                                     ),
                                 },
                                 "is_error": True,
@@ -388,9 +375,10 @@ class Worker:
                             tool_result_event_payload(completion_chunk, artifact, artifact_unavailable),
                         )
                     full_text = (
-                        "The approved write action may have reached the target, but AcornOps could not confirm "
+                        "The approved write action may have reached the affected system, "
+                        "but AcornOps could not confirm "
                         "its final outcome. "
-                        "Inspect the target before retrying this write."
+                        "Inspect the affected system before retrying this write."
                     )
                     emit_event("run_failed", {
                         "code": "WRITE_TOOL_OUTCOME_UNKNOWN",
@@ -406,7 +394,7 @@ class Worker:
             assistant_instruction = snapshot.assistant.instructions.strip() if snapshot.assistant else None
             skill_names_by_ref = build_skill_names_by_ref(snapshot.skills)
             skill_catalog_instruction = None
-            if snapshot.scope.type == "target":
+            if snapshot.skills and snapshot.skills.entries:
                 skill_catalog_instruction = build_skill_catalog_instruction(
                     snapshot.skills
                 )
@@ -510,9 +498,7 @@ class Worker:
                                 tool_name=chunk["tool"],
                                 tool_ref=resolve_approval_tool_ref(
                                     chunk["tool"],
-                                    chunk["arguments"],
                                     approval_tool_refs,
-                                    target_tool_routes,
                                 ),
                                 summary=chunk.get("summary"),
                                 arguments=chunk["arguments"],

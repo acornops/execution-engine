@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from execution_engine.skill_constants import INTERNAL_LOAD_TARGET_SKILL_TOOL
+from execution_engine.skill_constants import INTERNAL_LOAD_SKILL_TOOL
 
 SkillLoader = Callable[[str], Awaitable[dict[str, Any]]]
 
@@ -23,7 +23,7 @@ class SkillLoadOutcome:
 
 
 def is_skill_call(tool_name: str) -> bool:
-    return tool_name == INTERNAL_LOAD_TARGET_SKILL_TOOL
+    return tool_name == INTERNAL_LOAD_SKILL_TOOL
 
 
 async def resolve_skill_call(

@@ -36,11 +36,11 @@ The execution engine owns run execution and talks only to the control plane and 
   route; execution-engine does not make the external HTTP request itself.
   Provider-native `web_search` remains the only declaration sent through
   `native_tools`, while target and MCP tools retain their existing route.
-- Workflow target MCP tools carry explicit `target_routes` in their tool spec.
-  The model chooses `target_id`; the engine removes that routing field from the
-  MCP arguments and sends only the matching target type and server-qualified
-  tool reference to llm-gateway. Missing, duplicate, or unlisted routes fail
-  closed before transport.
+- The generic `targets` MCP server declares `target_id` and `target_type` as
+  ordinary tool parameters. The model supplies them only when it chooses one of
+  those tools. The engine validates that both arguments are present and forwards
+  them inside `arguments`; Agent-chat and Workflow gateway envelopes never gain
+  top-level target identity.
 - Execution-engine never calls target agents, management-console, or external MCP servers directly.
 - Cancellation is terminal from the engine's point of view; after cancellation wins, user-visible assistant output stops.
 - Approval continuations must not store gateway tokens or credentials. Resume reboots policy through control-plane bootstrap.
@@ -58,6 +58,8 @@ The execution engine owns run execution and talks only to the control plane and 
 - Execution-engine callbacks use `Authorization: Bearer <ORCH_SERVICE_TOKEN>`.
 - Run dispatch accepts idempotent replays, rejects scope mismatches, and reports local overload without widening run ownership.
 - Workspace workflow runs use explicit workspace scope fields; they must not fake a target.
+- Direct Agent conversations use explicit `agent_chat` scope with an exact Agent id and no Workflow or top-level target identity.
+- Target scope requires only target-chat identity and rejects all Agent and Workflow identity fields. Agent and Workflow runs may select targets only in generic Targets MCP tool arguments.
 - `WRITE_TOOL_OUTCOME_UNKNOWN` is fail-closed: do not retry a write after the approval execution state is already executing or unknown.
 - `patch_workload`, `patch_resource`, and `patch_configmap` approvals summarize
   semantic field intent without echoing literal environment or ConfigMap
@@ -89,7 +91,7 @@ The execution engine owns run execution and talks only to the control plane and 
   uses it to derive stable AgentK write operation IDs without exposing it to
   third-party MCP servers.
 - The gateway validates provider, model, tool, native-tool, max-output, and scope claims; execution-engine must not bypass or reinterpret those checks.
-- Frozen target skills use the internal model-only `_acornops_load_skill` pseudo-tool. It is intercepted by execution-engine and is not an MCP tool.
+- Frozen run skills use the internal model-only `_acornops_load_skill` pseudo-tool. It is intercepted by execution-engine and is not an MCP tool.
 - Explicit target-chat skill references are preloaded through the same bounded
   skill loader before the first model request. Explicit tool references add
   exact runtime aliases to model instructions but never bypass tool authority

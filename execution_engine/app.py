@@ -200,7 +200,6 @@ async def start_run(request: RunRequest) -> Response:
             executor_role=request.executor_role,
             parent_run_id=request.parent_run_id,
             agent_id=request.agent_id,
-            agent_version=request.agent_version,
             trigger_id=request.trigger_id,
         )
         state, created = await registry.get_or_create(
@@ -217,7 +216,6 @@ async def start_run(request: RunRequest) -> Response:
             executor_role=request.executor_role,
             parent_run_id=request.parent_run_id,
             agent_id=request.agent_id,
-            agent_version=request.agent_version,
             trigger_id=request.trigger_id,
         )
     except ValueError as e:

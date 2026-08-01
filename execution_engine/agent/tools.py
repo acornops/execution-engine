@@ -173,6 +173,7 @@ class CoordinationToolClient(ToolClient):
 
     DELEGATE = "_acornops_delegate_specialist"
     AWAIT = "_acornops_await_delegations"
+    DELEGATION_ARGUMENTS = frozenset({"capabilityId", "taskPrompt", "required"})
 
     def __init__(self, delegate: ToolClient, orchestrator: Any, run_id: str, allowed_tools: Iterable[str]):
         self.delegate = delegate
@@ -207,11 +208,24 @@ class CoordinationToolClient(ToolClient):
                         "code": "COORDINATION_TOOL_CALL_ID_REQUIRED",
                         "message": "Delegation requires the model tool-call ID.",
                     })
+                unexpected = sorted(set(arguments) - self.DELEGATION_ARGUMENTS)
+                if unexpected:
+                    return _error_result({
+                        "code": "DELEGATION_REQUEST_INVALID",
+                        "message": f"Unsupported delegation argument(s): {', '.join(unexpected)}.",
+                        "retryable": False,
+                    })
                 value = await self.orchestrator.create_delegation(
                     self.run_id,
                     {**arguments, "toolCallId": call_id},
                 )
             else:
+                if arguments:
+                    return _error_result({
+                        "code": "DELEGATION_REQUEST_INVALID",
+                        "message": "Awaiting delegations does not accept arguments.",
+                        "retryable": False,
+                    })
                 value = await self.orchestrator.list_delegations(self.run_id)
             return {
                 "full_result": value,
@@ -323,61 +337,62 @@ class GatewayToolClient(ToolClient):
         url: str,
         token: str,
         workspace_id: str,
-        target_id: str | None,
-        target_type: str | None,
         run_id: str,
         allowed_tools: Iterable[str],
+        target_id: str | None = None,
+        target_type: str | None = None,
         tool_capabilities: Dict[str, str] | None = None,
         tool_refs: Dict[str, Dict[str, str]] | None = None,
-        target_tool_routes: Dict[str, Dict[str, Dict[str, str]]] | None = None,
         scope_type: str = "target",
         workflow_id: str | None = None,
         execution_id: str | None = None,
         workflow_session_id: str | None = None,
         executor_role: str | None = None,
         agent_id: str | None = None,
-        agent_version: int | None = None,
         trigger_id: str | None = None,
     ):
         """Initialize a run-scoped tool gateway client."""
         self.url = url
         self.token = token
         self.workspace_id = workspace_id
-        self.target_id = target_id
-        self.target_type = target_type
         self.run_id = run_id
         self.scope_type = scope_type
-        self.workflow_id = workflow_id
-        self.execution_id = execution_id
-        self.workflow_session_id = workflow_session_id
-        self.executor_role = executor_role
-        self.agent_id = agent_id
-        self.agent_version = agent_version
-        self.trigger_id = trigger_id
+        if scope_type == "target":
+            if not target_id or not target_type:
+                raise ValueError("target tool clients require target identity")
+            if any((workflow_id, execution_id, workflow_session_id, executor_role, agent_id, trigger_id)):
+                raise ValueError("target tool clients forbid Agent and Workflow configuration")
+            self.scope_fields = {
+                "target_id": target_id,
+                "target_type": target_type,
+            }
+        elif scope_type == "agent_chat":
+            if not agent_id:
+                raise ValueError("Agent-chat tool clients require Agent identity")
+            if any((target_id, target_type, workflow_id, execution_id, workflow_session_id, executor_role, trigger_id)):
+                raise ValueError("Agent-chat tool clients forbid target and Workflow configuration")
+            self.scope_fields = {"agent_id": agent_id}
+        elif scope_type == "workspace":
+            if not all((workflow_id, execution_id, workflow_session_id, executor_role)):
+                raise ValueError("Workflow tool clients require Workflow execution identity")
+            if target_id or target_type:
+                raise ValueError("Workflow tool clients forbid target configuration")
+            self.scope_fields = {
+                "workflow_id": workflow_id,
+                "execution_id": execution_id,
+                "workflow_session_id": workflow_session_id,
+                "executor_role": executor_role,
+                **({"agent_id": agent_id} if agent_id is not None else {}),
+                **({"trigger_id": trigger_id} if trigger_id is not None else {}),
+            }
+        else:
+            raise ValueError(f"unsupported tool client scope: {scope_type}")
         self.allowed_tools = set(allowed_tools)
         self.tool_capabilities = dict(tool_capabilities or {})
         self.tool_refs = {
             alias: {"server_id": str(ref["server_id"]), "tool_name": str(ref["tool_name"])}
             for alias, ref in (tool_refs or {}).items()
             if isinstance(ref, dict) and ref.get("server_id") and ref.get("tool_name")
-        }
-        self.target_tool_routes = {
-            alias: {
-                target_id: {
-                    "target_id": str(route["target_id"]),
-                    "target_type": str(route["target_type"]),
-                    "server_id": str(route["server_id"]),
-                    "tool_name": str(route["tool_name"]),
-                }
-                for target_id, route in routes.items()
-                if isinstance(route, dict)
-                and route.get("target_id")
-                and route.get("target_type")
-                and route.get("server_id")
-                and route.get("tool_name")
-            }
-            for alias, routes in (target_tool_routes or {}).items()
-            if isinstance(routes, dict)
         }
         self.headers = {"Authorization": f"Bearer {self.token}"}
         self._client = httpx.AsyncClient(
@@ -428,59 +443,36 @@ class GatewayToolClient(ToolClient):
 
         write_capable = self.tool_capabilities.get(tool_name, "write") == "write"
 
-        target_id = self.target_id
-        target_type = self.target_type
         tool_ref = self.tool_refs.get(tool_name)
         tool_arguments = dict(arguments)
-        routes = self.target_tool_routes.get(tool_name)
-        if routes:
-            requested_target_id = tool_arguments.pop("target_id", None)
-            route = routes.get(requested_target_id) if isinstance(requested_target_id, str) else None
-            if route is None:
+        if tool_ref and tool_ref.get("server_id") == "targets":
+            requested_target_id = tool_arguments.get("target_id")
+            requested_target_type = tool_arguments.get("target_type")
+            if (
+                not isinstance(requested_target_id, str)
+                or requested_target_type not in {"kubernetes", "virtual_machine"}
+            ):
                 tool_calls_total.labels(result="not_allowed").inc()
                 return _error_result({
-                    "code": "TOOL_TARGET_NOT_ALLOWED",
-                    "message": f"Tool '{tool_name}' requires an allowed target_id.",
+                    "code": "TOOL_TARGET_INVALID",
+                    "message": f"Tool '{tool_name}' requires target_id and target_type.",
                 })
-            target_id = route["target_id"]
-            target_type = route["target_type"]
-            tool_ref = {
-                "server_id": route["server_id"],
-                "tool_name": route["tool_name"],
-            }
 
         payload = ToolCallRequest(
             run_id=self.run_id,
             workspace_id=self.workspace_id,
             scope={"type": self.scope_type},
-            target_id=target_id,
-            target_type=target_type,
-            workflow_id=self.workflow_id,
-            execution_id=self.execution_id,
-            workflow_session_id=self.workflow_session_id,
-            executor_role=self.executor_role,
-            agent_id=self.agent_id,
-            agent_version=self.agent_version,
-            trigger_id=self.trigger_id,
             tool_call_id=call_id,
             approval_receipt=approval_receipt,
             tool=tool_name,
             tool_ref=tool_ref,
-            arguments=tool_arguments
+            arguments=tool_arguments,
+            **self.scope_fields,
         )
 
-        payload_json = payload.model_dump()
+        payload_json = payload.model_dump(exclude_none=True)
         if self.scope_type == "target":
             payload_json.pop("scope", None)
-            payload_json.pop("workflow_id", None)
-            payload_json.pop("execution_id", None)
-            payload_json.pop("workflow_session_id", None)
-            payload_json.pop("executor_role", None)
-            payload_json.pop("trigger_id", None)
-            if self.agent_id is None:
-                payload_json.pop("agent_id", None)
-            if self.agent_version is None:
-                payload_json.pop("agent_version", None)
         if payload_json.get("tool_ref") is None:
             payload_json.pop("tool_ref", None)
         if payload_json.get("approval_receipt") is None:

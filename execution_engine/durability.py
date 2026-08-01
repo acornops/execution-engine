@@ -115,7 +115,6 @@ class PersistedRun:
     executor_role: str | None
     parent_run_id: str | None
     agent_id: str | None
-    agent_version: int | None
     trigger_id: str | None
     status: str
     created_at: datetime
@@ -200,7 +199,6 @@ class DurabilityStore:
             executor_role=value.get("executor_role"),
             parent_run_id=value.get("parent_run_id"),
             agent_id=value.get("agent_id"),
-            agent_version=value.get("agent_version"),
             trigger_id=value.get("trigger_id"),
             status=value["status"],
             created_at=_parse_iso(value.get("created_at")) or datetime.now(UTC),
@@ -224,7 +222,6 @@ class DurabilityStore:
         executor_role: str | None = None,
         parent_run_id: str | None = None,
         agent_id: str | None = None,
-        agent_version: int | None = None,
         trigger_id: str | None = None,
         status: str,
         created_at: datetime,
@@ -245,7 +242,6 @@ class DurabilityStore:
                 "executor_role": executor_role,
                 "parent_run_id": parent_run_id,
                 "agent_id": agent_id,
-                "agent_version": agent_version,
                 "trigger_id": trigger_id,
                 "status": status,
                 "created_at": _to_iso(created_at),
@@ -285,7 +281,6 @@ class DurabilityStore:
         executor_role: str | None = None,
         parent_run_id: str | None = None,
         agent_id: str | None = None,
-        agent_version: int | None = None,
         trigger_id: str | None = None,
         status: str,
         created_at: datetime,
@@ -311,7 +306,6 @@ class DurabilityStore:
                     "executor_role": executor_role,
                     "parent_run_id": parent_run_id,
                     "agent_id": agent_id,
-                    "agent_version": agent_version,
                     "trigger_id": trigger_id,
                     "status": status,
                     "created_at": _to_iso(created_at),
@@ -345,7 +339,6 @@ class DurabilityStore:
                     executor_role=value.get("executor_role"),
                     parent_run_id=value.get("parent_run_id"),
                     agent_id=value.get("agent_id"),
-                    agent_version=value.get("agent_version"),
                     trigger_id=value.get("trigger_id"),
                     status=value["status"],
                     created_at=_parse_iso(value.get("created_at")) or datetime.now(UTC),

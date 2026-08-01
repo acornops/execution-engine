@@ -37,12 +37,11 @@ RunKey = Tuple[
     Optional[str],
     Optional[str],
     Optional[str],
-    Optional[int],
     Optional[str],
 ]
 # (scope_type, workspace_id, target_id, target_type, session_id, message_id, run_id,
 #  workflow_id, execution_id, workflow_session_id, executor_role, parent_run_id,
-#  agent_id, agent_version, trigger_id)
+#  agent_id, trigger_id)
 
 class RunState:
     """
@@ -80,7 +79,6 @@ class RunState:
         executor_role: Optional[str] = None,
         parent_run_id: Optional[str] = None,
         agent_id: Optional[str] = None,
-        agent_version: Optional[int] = None,
         trigger_id: Optional[str] = None,
     ):
         """Initialize a queued run state."""
@@ -97,7 +95,6 @@ class RunState:
         self.executor_role = executor_role
         self.parent_run_id = parent_run_id
         self.agent_id = agent_id
-        self.agent_version = agent_version
         self.trigger_id = trigger_id
 
         self.status = RunStatus.QUEUED
@@ -128,7 +125,6 @@ class RunState:
             self.executor_role,
             self.parent_run_id,
             self.agent_id,
-            self.agent_version,
             self.trigger_id,
         )
 
@@ -174,7 +170,6 @@ class RunRegistry:
         executor_role: Optional[str] = None,
         parent_run_id: Optional[str] = None,
         agent_id: Optional[str] = None,
-        agent_version: Optional[int] = None,
         trigger_id: Optional[str] = None,
     ) -> Tuple[RunState, bool]:
         """
@@ -208,7 +203,6 @@ class RunRegistry:
             executor_role,
             parent_run_id,
             agent_id,
-            agent_version,
             trigger_id,
         )
         async with self._lock:
@@ -235,7 +229,6 @@ class RunRegistry:
                         getattr(persisted, "executor_role", None),
                         getattr(persisted, "parent_run_id", None),
                         getattr(persisted, "agent_id", None),
-                        getattr(persisted, "agent_version", None),
                         getattr(persisted, "trigger_id", None),
                     )
                     if persisted_key != key:
@@ -259,7 +252,6 @@ class RunRegistry:
                 executor_role=executor_role,
                 parent_run_id=parent_run_id,
                 agent_id=agent_id,
-                agent_version=agent_version,
                 trigger_id=trigger_id,
             )
             if self.durability_store:
@@ -277,7 +269,6 @@ class RunRegistry:
                     executor_role=state.executor_role,
                     parent_run_id=state.parent_run_id,
                     agent_id=state.agent_id,
-                    agent_version=state.agent_version,
                     trigger_id=state.trigger_id,
                     status=state.status.value,
                     created_at=state.created_at,
@@ -300,7 +291,6 @@ class RunRegistry:
                         getattr(persisted, "executor_role", None),
                         getattr(persisted, "parent_run_id", None),
                         getattr(persisted, "agent_id", None),
-                        getattr(persisted, "agent_version", None),
                         getattr(persisted, "trigger_id", None),
                     )
                     if persisted_key != key:
@@ -336,7 +326,6 @@ class RunRegistry:
             executor_role=getattr(persisted, "executor_role", None),
             parent_run_id=getattr(persisted, "parent_run_id", None),
             agent_id=getattr(persisted, "agent_id", None),
-            agent_version=getattr(persisted, "agent_version", None),
             trigger_id=getattr(persisted, "trigger_id", None),
         )
         state.status = RunStatus(persisted.status)
@@ -403,7 +392,6 @@ class RunRegistry:
             executor_role=state.executor_role,
             parent_run_id=state.parent_run_id,
             agent_id=state.agent_id,
-            agent_version=state.agent_version,
             trigger_id=state.trigger_id,
             status=state.status.value,
             created_at=state.created_at,
@@ -485,7 +473,6 @@ class RunRegistry:
                 executor_role=persisted.executor_role,
                 parent_run_id=persisted.parent_run_id,
                 agent_id=persisted.agent_id,
-                agent_version=persisted.agent_version,
                 trigger_id=persisted.trigger_id,
             )
             state.status = RunStatus.FAILED

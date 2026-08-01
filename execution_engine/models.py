@@ -2,10 +2,10 @@
 
 import hashlib
 from datetime import UTC, datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 import rfc8785
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 from execution_engine.examples import (
     EXAMPLE_MESSAGE_ID,
@@ -26,129 +26,132 @@ def utc_now() -> datetime:
 # --- Incoming Requests ---
 
 
-class RunRequest(BaseModel):
-    """Request model for starting a new run."""
+class RunRequestBase(BaseModel):
+    """Fields shared by mutually exclusive execution requests."""
 
     contract_version: Literal[2]
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
-    scope_type: Literal["target", "workspace"] = "target"
-    target_id: Optional[str] = Field(default=None, examples=[EXAMPLE_TARGET_ID])
-    target_type: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
-    workflow_id: Optional[str] = None
-    execution_id: Optional[str] = None
-    workflow_session_id: Optional[str] = None
-    executor_role: Optional[Literal["coordinator", "specialist"]] = None
-    parent_run_id: Optional[str] = None
-    attempt_number: Optional[int] = Field(default=None, ge=1)
-    agent_id: Optional[str] = None
-    agent_version: Optional[int] = None
-    trigger_id: Optional[str] = None
-    idempotency_key: Optional[str] = None
     session_id: str = Field(examples=[EXAMPLE_SESSION_ID])
     message_id: str = Field(examples=[EXAMPLE_MESSAGE_ID])
     requested_at: datetime
+    model_config = ConfigDict(extra="forbid")
+
+
+class TargetRunRequest(RunRequestBase):
+    """Target-chat request with exact target identity."""
+
+    scope_type: Literal["target"]
+    target_id: str = Field(examples=[EXAMPLE_TARGET_ID])
+    target_type: TargetType = Field(examples=TARGET_TYPE_EXAMPLES)
+
+
+class AgentChatRunRequest(RunRequestBase):
+    """Direct Agent-chat request with no target or Workflow fields."""
+
+    scope_type: Literal["agent_chat"]
+    agent_id: str
+
+
+class WorkflowRunRequest(RunRequestBase):
+    """Workflow request with no target fields."""
+
+    scope_type: Literal["workspace"]
+    workflow_id: str
+    execution_id: str
+    workflow_session_id: str
+    executor_role: Literal["coordinator", "specialist"]
+    parent_run_id: Optional[str] = None
+    attempt_number: Optional[int] = Field(default=None, ge=1)
+    agent_id: Optional[str] = None
+    trigger_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
 
     @model_validator(mode="after")
-    def validate_scope_fields(self):
-        if self.scope_type == "target":
-            if not self.target_id or not self.target_type:
-                raise ValueError("target scope requires target_id and target_type")
-            return self
-
-        missing = [
-            name
-            for name, value in (
-                ("workflow_id", self.workflow_id),
-                ("execution_id", self.execution_id),
-                ("workflow_session_id", self.workflow_session_id),
-                ("executor_role", self.executor_role),
-            )
-            if not value
-        ]
-        if missing:
-            raise ValueError(f"workspace workflow scope missing required fields: {', '.join(missing)}")
-        if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
-            raise ValueError("workflow target binding requires both target_id and target_type")
-        if self.executor_role == "coordinator" and (
-            self.parent_run_id or self.agent_id or self.agent_version is not None
-        ):
+    def validate_executor(self):
+        if self.executor_role == "coordinator" and (self.parent_run_id or self.agent_id):
             raise ValueError("coordinator workflow runs forbid parent and agent identity")
-        if self.executor_role == "specialist" and (not self.agent_id or self.agent_version is None):
-            raise ValueError("specialist workflow runs require agent identity and version")
+        if self.executor_role == "specialist" and not self.agent_id:
+            raise ValueError("specialist workflow runs require agent identity")
         return self
 
-    model_config = {
-        "extra": "forbid",
-        "json_schema_extra": {
-            "example": {
-                "contract_version": 2,
-                "run_id": EXAMPLE_RUN_ID,
-                "workspace_id": EXAMPLE_WORKSPACE_ID,
-                "target_id": EXAMPLE_TARGET_ID,
-                "target_type": KUBERNETES_TARGET_TYPE,
-                "session_id": EXAMPLE_SESSION_ID,
-                "message_id": EXAMPLE_MESSAGE_ID,
-                "requested_at": "2026-03-01T00:00:00Z",
-            }
-        },
-    }
+
+RunRequestVariant = Annotated[
+    Union[TargetRunRequest, AgentChatRunRequest, WorkflowRunRequest],
+    Field(discriminator="scope_type"),
+]
+
+
+class RunRequest(RootModel[RunRequestVariant]):
+    """Discriminated execution request that exposes only its variant fields."""
+
+    def __getattr__(self, name: str):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(self.root, name, None)
 
 
 # --- Orchestrator Bootstrap ---
 
 
-class Scope(BaseModel):
-    """Run scope information."""
+class ScopeBase(BaseModel):
+    """Fields shared by mutually exclusive bootstrap scopes."""
 
-    type: Literal["target", "workspace"] = "target"
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
-    target_id: Optional[str] = Field(default=None, examples=[EXAMPLE_TARGET_ID])
-    target_type: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
-    workflow_id: Optional[str] = None
-    execution_id: Optional[str] = None
-    workflow_session_id: Optional[str] = None
-    executor_role: Optional[Literal["coordinator", "specialist"]] = None
+    session_id: str = Field(examples=[EXAMPLE_SESSION_ID])
+    run_id: str = Field(examples=[EXAMPLE_RUN_ID])
+    user_id: Optional[str] = Field(default=None, examples=[EXAMPLE_USER_ID])
+    model_config = ConfigDict(extra="forbid")
+
+
+class TargetScope(ScopeBase):
+    type: Literal["target"]
+    target_id: str = Field(examples=[EXAMPLE_TARGET_ID])
+    target_type: TargetType = Field(examples=TARGET_TYPE_EXAMPLES)
+
+
+class AgentChatScope(ScopeBase):
+    type: Literal["agent_chat"]
+    agent_id: str
+
+
+class WorkflowScope(ScopeBase):
+    type: Literal["workspace"]
+    workflow_id: str
+    execution_id: str
+    workflow_session_id: str
+    executor_role: Literal["coordinator", "specialist"]
     parent_run_id: Optional[str] = None
     attempt_number: Optional[int] = Field(default=None, ge=1)
     idempotency_key: Optional[str] = None
     agent_id: Optional[str] = None
-    agent_version: Optional[int] = None
     trigger_id: Optional[str] = None
-    session_id: str = Field(examples=[EXAMPLE_SESSION_ID])
-    run_id: str = Field(examples=[EXAMPLE_RUN_ID])
-    user_id: Optional[str] = Field(default=None, examples=[EXAMPLE_USER_ID])
 
     @model_validator(mode="after")
-    def validate_scope_fields(self):
-        if self.type == "target":
-            if not self.target_id or not self.target_type:
-                raise ValueError("target scope requires target_id and target_type")
-            return self
-
-        missing = [
-            name
-            for name, value in (
-                ("workflow_id", self.workflow_id),
-                ("execution_id", self.execution_id),
-                ("workflow_session_id", self.workflow_session_id),
-                ("executor_role", self.executor_role),
-            )
-            if not value
-        ]
-        if missing:
-            raise ValueError(f"workspace workflow scope missing required fields: {', '.join(missing)}")
-        if (self.target_id and not self.target_type) or (self.target_type and not self.target_id):
-            raise ValueError("workflow target binding requires both target_id and target_type")
-        if self.executor_role == "coordinator" and (
-            self.parent_run_id or self.agent_id or self.agent_version is not None
-        ):
+    def validate_executor(self):
+        if self.executor_role == "coordinator" and (self.parent_run_id or self.agent_id):
             raise ValueError("coordinator workflow scope forbids parent and agent identity")
-        if self.executor_role == "specialist" and (not self.agent_id or self.agent_version is None):
-            raise ValueError("specialist workflow scope requires agent identity and version")
+        if self.executor_role == "specialist" and not self.agent_id:
+            raise ValueError("specialist workflow scope requires agent identity")
         return self
 
-    model_config = {"extra": "forbid"}
+
+ScopeVariant = Annotated[
+    Union[TargetScope, AgentChatScope, WorkflowScope],
+    Field(discriminator="type"),
+]
+
+
+class Scope(RootModel[ScopeVariant]):
+    """Discriminated bootstrap scope that exposes only its variant fields."""
+
+    def __init__(self, **data: Any):
+        super().__init__(root=data)
+
+    def __getattr__(self, name: str):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(self.root, name, None)
 
 
 class Policy(BaseModel):
@@ -282,21 +285,21 @@ class ToolConfig(BaseModel):
 
 
 class AssistantConfig(BaseModel):
-    """Target-adapter or Agent instructions pinned by the control plane."""
+    """Assistant instructions pinned by the control plane."""
 
     targetType: Optional[TargetType] = None
     instructions: str
 
 
 class SkillFile(BaseModel):
-    """A single markdown file within a target troubleshooting skill bundle."""
+    """A single markdown file within a run skill bundle."""
 
     path: str
     content: str
 
 
 class SkillEntry(BaseModel):
-    """One target troubleshooting skill bundle."""
+    """One run skill bundle."""
 
     ref: str
     skill_id: str
@@ -307,7 +310,7 @@ class SkillEntry(BaseModel):
 
 
 class SkillConfig(BaseModel):
-    """Target troubleshooting skill bundles attached to a run snapshot."""
+    """Skill bundles attached to a run snapshot."""
 
     contract_version: Literal[2] = 2
     entries: List[SkillEntry] = Field(default_factory=list)
@@ -393,7 +396,7 @@ class ContextPackage(BaseModel):
     summaries: List[Any] = []
     attachments: List[Any] = []
     resources: List[Dict[str, Any]] = []
-    target_insights: TargetInsightsContext = Field(default_factory=TargetInsightsContext)
+    target_insights: TargetInsightsContext | None = None
 
 
 # --- Events ---
@@ -540,7 +543,7 @@ class ToolCallRequest(BaseModel):
 
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
-    scope: Dict[str, Literal["target", "workspace"]] = Field(default_factory=lambda: {"type": "target"})
+    scope: Dict[str, Literal["target", "agent_chat", "workspace"]] = Field(default_factory=lambda: {"type": "target"})
     target_id: Optional[str] = Field(default=None, examples=[EXAMPLE_TARGET_ID])
     target_type: Optional[TargetType] = Field(default=None, examples=TARGET_TYPE_EXAMPLES)
     workflow_id: Optional[str] = None
@@ -548,7 +551,6 @@ class ToolCallRequest(BaseModel):
     workflow_session_id: Optional[str] = None
     executor_role: Optional[Literal["coordinator", "specialist"]] = None
     agent_id: Optional[str] = None
-    agent_version: Optional[int] = None
     trigger_id: Optional[str] = None
     tool_call_id: Optional[str] = Field(default=None, min_length=1, max_length=256)
     approval_receipt: Optional[str] = Field(default=None, min_length=1, max_length=8192)
