@@ -24,19 +24,24 @@ ORCH_URL = os.getenv("ORCH_URL", "http://localhost:8000")
 DISPATCH_TOKEN = os.getenv("EXECUTION_ENGINE_DISPATCH_TOKEN", "default_dispatch_token")
 DISPATCH_HEADERS = {"Authorization": f"Bearer {DISPATCH_TOKEN}"}
 
-@pytest.mark.asyncio
-async def test_happy_path():
-    run_id = EXAMPLE_HAPPY_RUN_ID
-    payload = {
+
+def target_run_payload(run_id: str, *, target_id: str = EXAMPLE_TARGET_ID) -> dict[str, str | int]:
+    return {
         "contract_version": 2,
+        "scope_type": "target",
         "run_id": run_id,
         "workspace_id": EXAMPLE_WORKSPACE_ID,
-        "target_id": EXAMPLE_TARGET_ID,
+        "target_id": target_id,
         "target_type": KUBERNETES_TARGET_TYPE,
         "session_id": EXAMPLE_SESSION_ID,
         "message_id": EXAMPLE_MESSAGE_ID,
-        "requested_at": datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        "requested_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
+
+@pytest.mark.asyncio
+async def test_happy_path():
+    run_id = EXAMPLE_HAPPY_RUN_ID
+    payload = target_run_payload(run_id)
 
     async with httpx.AsyncClient() as client:
         # Start run
@@ -69,16 +74,7 @@ async def test_happy_path():
 @pytest.mark.asyncio
 async def test_idempotency():
     run_id = EXAMPLE_IDEMPOTENCY_RUN_ID
-    payload = {
-        "contract_version": 2,
-        "run_id": run_id,
-        "workspace_id": EXAMPLE_WORKSPACE_ID,
-        "target_id": EXAMPLE_TARGET_ID,
-        "target_type": KUBERNETES_TARGET_TYPE,
-        "session_id": EXAMPLE_SESSION_ID,
-        "message_id": EXAMPLE_MESSAGE_ID,
-        "requested_at": datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    }
+    payload = target_run_payload(run_id)
 
     async with httpx.AsyncClient() as client:
         # First call
@@ -99,16 +95,7 @@ async def test_idempotency():
 @pytest.mark.asyncio
 async def test_cancellation():
     run_id = EXAMPLE_CANCEL_RUN_ID
-    payload = {
-        "contract_version": 2,
-        "run_id": run_id,
-        "workspace_id": EXAMPLE_WORKSPACE_ID,
-        "target_id": EXAMPLE_TARGET_ID,
-        "target_type": KUBERNETES_TARGET_TYPE,
-        "session_id": EXAMPLE_SESSION_ID,
-        "message_id": EXAMPLE_MESSAGE_ID,
-        "requested_at": datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    }
+    payload = target_run_payload(run_id)
 
     async with httpx.AsyncClient() as client:
         # Start run
@@ -135,16 +122,10 @@ async def test_cancellation():
 async def test_scope_mismatch():
     run_id = EXAMPLE_MISMATCH_RUN_ID
     # Use a target_id that does not match the orchestrator bootstrap target.
-    payload = {
-        "contract_version": 2,
-        "run_id": run_id,
-        "workspace_id": EXAMPLE_WORKSPACE_ID,
-        "target_id": "1c2d62cd-c4e4-49ee-986f-f8767e6a4902",
-        "target_type": KUBERNETES_TARGET_TYPE,
-        "session_id": EXAMPLE_SESSION_ID,
-        "message_id": EXAMPLE_MESSAGE_ID,
-        "requested_at": datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    }
+    payload = target_run_payload(
+        run_id,
+        target_id="1c2d62cd-c4e4-49ee-986f-f8767e6a4902",
+    )
 
     async with httpx.AsyncClient() as client:
         await client.post(f"{EE_URL}/api/v1/runs", json=payload, headers=DISPATCH_HEADERS)
@@ -162,16 +143,7 @@ async def test_scope_mismatch():
 @pytest.mark.asyncio
 async def test_tool_calling():
     run_id = EXAMPLE_TOOL_RUN_ID
-    payload = {
-        "contract_version": 2,
-        "run_id": run_id,
-        "workspace_id": EXAMPLE_WORKSPACE_ID,
-        "target_id": EXAMPLE_TARGET_ID,
-        "target_type": KUBERNETES_TARGET_TYPE,
-        "session_id": EXAMPLE_SESSION_ID,
-        "message_id": EXAMPLE_MESSAGE_ID,
-        "requested_at": datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    }
+    payload = target_run_payload(run_id)
 
     async with httpx.AsyncClient() as client:
         # Start run

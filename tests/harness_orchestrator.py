@@ -29,6 +29,7 @@ async def bootstrap(run_id: str):
     return {
         "contract_version": 2,
         "scope": {
+            "type": "target",
             "workspace_id": EXAMPLE_WORKSPACE_ID,
             "target_id": EXAMPLE_TARGET_ID,
             "target_type": KUBERNETES_TARGET_TYPE,
