@@ -1268,7 +1268,7 @@ async def test_coordination_functions_reject_unknown_arguments_before_orchestrat
         {
             "capabilityId": "infrastructure.diagnostics.read",
             "taskPrompt": "Inspect the infrastructure",
-            "resourceBinding": {"resourceId": "resource-1"},
+            "unexpected": True,
         },
         call_id="call-delegate-1",
     )
