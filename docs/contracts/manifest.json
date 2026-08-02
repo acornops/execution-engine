@@ -13,7 +13,6 @@
         "assistant?.{targetType?,instructions}",
         "policy.{max_runtime_ms,max_output_tokens,budget_cents,max_steps,max_tool_calls,max_duplicate_tool_calls}",
         "context.{endpoint,max_context_tokens}",
-        "resources.{prompt_digest,binding_digest,resolved_at,bindings[].{binding_id,type,resource_id,provider,provider_version,workspace_id,label_snapshot,source,operations,context_mode,provider_data?}}",
         "llm.{provider,model,temperature,mode,reasoning.{summary_mode,effort},gateway.{url,token,request_timeout_ms}}",
         "tools.{tool_registry_version,allowed_tools,allowed_tool_refs[].{server_id,tool_name},native_tools,platform_functions[].{id,model_alias},tool_specs[].{server_id?,tool_ref?},referenced_tools[].{name,label,server_id?,tool_name?},write_unavailable_reason?,gateway.{url,token},confirmation_required_for_write,approval_timeout_seconds}",
         "skills?.{contract_version,entries[].{ref,skill_id,name,description,file_count,total_bytes},referenced_refs[],load_endpoint}",
@@ -21,7 +20,6 @@
         "tracing"
       ],
       "contextFields": ["messages", "summaries", "attachments", "target_insights.retrieval_status", "target_insights.snippets[]"],
-      "promptResourceIntegrity": "The execution engine rejects duplicate bindings, oversized or malformed claims, and any binding array whose canonical SHA-256 digest differs from resources.binding_digest.",
       "eventFrameFields": ["schema_version", "run_id", "seq", "ts", "type", "payload"],
       "approvalRequestFields": ["toolCallId", "toolName", "toolRef.{serverId,toolName}", "summary?", "arguments", "continuation?"],
       "approvalExecutionStartedResponseFields": ["approval", "approvalReceipt"],
