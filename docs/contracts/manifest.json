@@ -68,7 +68,7 @@
         "workspace scope always identifies a Workflow executor run",
         "agent_chat scope identifies one direct Agent run, requires exact Agent identity, and forbids Workflow and top-level target identity",
         "coordinator runs forbid Agent identity; specialist runs require exact Agent identity",
-        "a Workflow remains workspace-scoped; target_id and target_type are selected and validated only when invoking an allowed generic targets MCP tool",
+        "a Workflow remains workspace-scoped; specialist runs may invoke only exact tools inherited from the selected Agent, including the Agent's built-in AcornOps Targets MCP installation",
         "idempotency_key is stable across at-least-once dispatch of one attempt"
       ]
     },
