@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from execution_engine.agent.tool_context import MAX_RESULT_CONTEXT_BYTES, compact_tool_context, json_bytes
 from execution_engine.config import settings
 from execution_engine.internal_transport import httpx_tls_kwargs
+from execution_engine.model_tool_names import ModelToolNameMap
 from execution_engine.models import ToolCallRequest, ToolCallResponse
 from execution_engine.util.metrics import (
     kubernetes_ownership_resolutions_total,
@@ -166,6 +167,32 @@ class ToolClientStub(ToolClient):
     ) -> Dict[str, Any]:
         """Always raises NotImplementedError as tools are disabled for this run."""
         raise NotImplementedError("MCP tool calls are disabled for this run.")
+
+
+class ModelToolNameClient(ToolClient):
+    """Translate readable model names back to the authorized gateway aliases."""
+
+    def __init__(self, delegate: ToolClient, names: ModelToolNameMap):
+        self.delegate = delegate
+        self.names = names
+
+    async def close(self) -> None:
+        if hasattr(self.delegate, "close"):
+            await self.delegate.close()
+
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        call_id: str | None = None,
+        approval_receipt: str | None = None,
+    ) -> Dict[str, Any]:
+        return await self.delegate.call_tool(
+            self.names.internal_name(tool_name),
+            arguments,
+            call_id=call_id,
+            approval_receipt=approval_receipt,
+        )
 
 
 class CoordinationToolClient(ToolClient):

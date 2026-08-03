@@ -76,12 +76,20 @@ def _sanitize_tool_schema_value(
     return _OMIT_TOOL_SCHEMA_VALUE
 
 
-def sanitize_tool_spec_for_llm(spec: dict[str, Any]) -> dict[str, Any] | None:
+def sanitize_tool_spec_for_llm(
+    spec: dict[str, Any],
+    *,
+    display_name: str | None = None,
+) -> dict[str, Any] | None:
     """Returns an LLM-safe tool spec or None when the tool name is invalid."""
     name = spec.get("name")
     if not isinstance(name, str) or not name.strip():
         return None
-    description = _sanitize_tool_text(spec.get("description")) or f"Execute tool '{name}'."
+    fallback_name = display_name if isinstance(display_name, str) and display_name else name
+    description = (
+        _sanitize_tool_text(spec.get("description"))
+        or f"Execute tool '{fallback_name}'."
+    )
     input_schema = spec.get("input_schema")
     if not isinstance(input_schema, dict):
         input_schema = {"type": "object", "additionalProperties": True}

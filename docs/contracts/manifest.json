@@ -99,6 +99,12 @@
       ],
       "internalModelOnlyTools": ["_acornops_load_skill"],
       "providerFunctionNamePattern": "^[A-Za-z_][A-Za-z0-9_-]{0,62}$",
+      "streamToolSpecFields": [
+        "name (internal JWT-authorized identity)",
+        "model_name? (provider-facing readable identity; defaults to name)",
+        "description?",
+        "input_schema?"
+      ],
       "streamResponseTypes": [
         "delta",
         "tool_call",

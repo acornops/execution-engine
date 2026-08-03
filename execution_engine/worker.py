@@ -44,6 +44,7 @@ from execution_engine.worker_tool_artifacts import (
     tool_result_event_summary,
 )
 from execution_engine.worker_tool_authority import (
+    build_model_tool_specs,
     build_runtime_tool_client,
     provider_native_tools,
     resolve_approval_tool_ref,
@@ -214,33 +215,14 @@ class Worker:
                 timeout_ms=snapshot.llm.gateway.request_timeout_ms or 60000
             )
 
-            (
-                tool_client,
-                tool_capabilities,
-                allowed_gateway_tools,
-                allowed_tool_names,
-            ) = (
-                build_runtime_tool_client(snapshot, state, self.orchestrator_client)
-            )
+            tool_authority = build_runtime_tool_client(snapshot, state, self.orchestrator_client)
+            tool_client = tool_authority.client
+            tool_capabilities = tool_authority.tool_capabilities
             llm_native_tools = provider_native_tools(snapshot.tools.native_tools)
-            llm_tool_specs = [
-                sanitized_spec
-                for spec in snapshot.tools.tool_specs
-                if isinstance(spec, dict) and spec.get("name") in allowed_tool_names
-                for sanitized_spec in [sanitize_tool_spec_for_llm(spec)]
-                if sanitized_spec is not None
-            ]
-            approval_tool_refs = {
-                str(spec.get("name")): {
-                    "server_id": str(spec.get("server_id")),
-                    "tool_name": str(spec.get("tool_name")),
-                }
-                for spec in snapshot.tools.tool_specs
-                if isinstance(spec, dict)
-                and spec.get("name")
-                and spec.get("server_id")
-                and spec.get("tool_name")
-            }
+            llm_tool_specs, approval_tool_refs = build_model_tool_specs(
+                snapshot.tools.tool_specs,
+                tool_authority,
+            )
             skill_loader_spec = build_skill_loader_tool_spec(snapshot.skills)
             if skill_loader_spec is not None:
                 sanitized_skill_loader_spec = sanitize_tool_spec_for_llm(skill_loader_spec)
@@ -262,7 +244,7 @@ class Worker:
                     pending_call_id,
                     pending_tool_name,
                     pending_arguments,
-                    allowed_gateway_tools,
+                    tool_authority.accepted_resume_tools,
                     tool_capabilities,
                 )
                 if approval.status == "approved":
@@ -303,10 +285,11 @@ class Worker:
                                 ),
                             }
                         else:
+                            durable_pending_tool_name = tool_authority.internal_name(pending_tool_name)
                             emit_event("tool_call_started", {
                                 "call_id": pending_call_id,
-                                "tool": pending_tool_name,
-                                "arguments": tool_call_event_arguments(pending_tool_name, pending_arguments),
+                                "tool": durable_pending_tool_name,
+                                "arguments": tool_call_event_arguments(durable_pending_tool_name, pending_arguments),
                             })
                             tool_result = await tool_client.call_tool(
                                 pending_tool_name,
@@ -363,9 +346,9 @@ class Worker:
                         completion_chunk = {
                             "type": "tool_result",
                             "call_id": pending_call_id,
-                            "tool": pending_tool_name,
-                            "result": executed_tool_result["model_context"],
                             **executed_tool_result,
+                            "tool": tool_authority.internal_name(pending_tool_name),
+                            "result": executed_tool_result["model_context"],
                         }
                         artifact, artifact_unavailable = await persist_tool_result_artifact(
                             self.orchestrator_client, state.run_id, completion_chunk
@@ -416,7 +399,7 @@ class Worker:
                 max_skill_loads=settings.AGENT_MAX_SKILL_LOADS_PER_RUN,
                 max_loaded_skill_bytes=settings.AGENT_MAX_LOADED_SKILL_BYTES_PER_RUN,
                 referenced_tool_names=[
-                    str(tool.get("name"))
+                    tool_authority.model_name(str(tool.get("name")))
                     for tool in snapshot.tools.referenced_tools
                     if isinstance(tool, dict) and tool.get("name")
                 ],
@@ -467,14 +450,19 @@ class Worker:
                                 full_text = ""
                             saw_tool_call = True
                             observed_tool_calls += 1
+                            durable_tool_name = tool_authority.internal_name(str(chunk["tool"]))
                             emit_event("tool_call_started", {
                                 "call_id": chunk["call_id"],
-                                "tool": chunk["tool"],
-                                "arguments": tool_call_event_arguments(chunk["tool"], chunk["arguments"]),
+                                "tool": durable_tool_name,
+                                "arguments": tool_call_event_arguments(durable_tool_name, chunk["arguments"]),
                             })
                         elif chunk["type"] == "tool_result":
+                            durable_chunk = {
+                                **chunk,
+                                "tool": tool_authority.internal_name(str(chunk["tool"])),
+                            }
                             artifact, artifact_unavailable = await persist_tool_result_artifact(
-                                self.orchestrator_client, state.run_id, chunk
+                                self.orchestrator_client, state.run_id, durable_chunk
                             )
                             tool_result_events.append(
                                 {
@@ -485,7 +473,7 @@ class Worker:
                             )
                             emit_event(
                                 "tool_call_completed",
-                                tool_result_event_payload(chunk, artifact, artifact_unavailable),
+                                tool_result_event_payload(durable_chunk, artifact, artifact_unavailable),
                             )
                         elif str(chunk["type"]).startswith("skill_context_"):
                             summary_events.flush(force=True)
@@ -495,7 +483,7 @@ class Worker:
                             approval = await self.orchestrator_client.create_tool_approval(
                                 state.run_id,
                                 tool_call_id=chunk["call_id"],
-                                tool_name=chunk["tool"],
+                                tool_name=tool_authority.internal_name(str(chunk["tool"])),
                                 tool_ref=resolve_approval_tool_ref(
                                     chunk["tool"],
                                     approval_tool_refs,

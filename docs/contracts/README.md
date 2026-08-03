@@ -81,6 +81,12 @@ The execution engine owns run execution and talks only to the control plane and 
 - Model streaming sends exactly one trusted `runtime_instruction` plus a typed,
   provider-neutral `transcript`; transcript roles are user, assistant, and
   grouped tool results. The gateway owns every provider-native serialization.
+- MCP tool specs retain the collision-safe internal alias in `name` for JWT
+  authorization and may carry a readable `model_name` for provider declarations.
+  Execution-engine derives that name from the authorized canonical tool reference,
+  adds a stable short suffix only on collision, and translates returned calls back
+  to the internal alias before execution. Durable events, approvals, artifacts,
+  and MCP tool-call requests continue to use the internal alias.
 - Tool-call continuation metadata is opaque, provider-namespaced, bounded to
   32 KiB, persisted only for same-provider continuation, and excluded from
   public events and ordinary logs.

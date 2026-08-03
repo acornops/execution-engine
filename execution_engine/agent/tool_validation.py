@@ -10,12 +10,16 @@ PATCH_TOOLS = {"patch_workload", "patch_resource", "patch_configmap"}
 
 
 def tool_schema_map(tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
-    """Index advertised schemas by tool name."""
-    return {
-        str(spec.get("name")): spec.get("input_schema")
-        for spec in tool_specs
-        if isinstance(spec, dict) and isinstance(spec.get("name"), str)
-    }
+    """Index advertised schemas by internal and optional model-facing names."""
+    schemas: dict[str, Any] = {}
+    for spec in tool_specs:
+        if not isinstance(spec, dict) or not isinstance(spec.get("name"), str):
+            continue
+        schema = spec.get("input_schema")
+        schemas[str(spec["name"])] = schema
+        if isinstance(spec.get("model_name"), str):
+            schemas[str(spec["model_name"])] = schema
+    return schemas
 
 
 def invalid_tool_argument_context(tool: str, details: list[dict[str, str]]) -> dict[str, Any]:

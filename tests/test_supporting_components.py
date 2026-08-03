@@ -17,8 +17,18 @@ import execution_engine.outbound_tls as outbound_tls_module
 import execution_engine.readiness as readiness_module
 import execution_engine.util.logging as logging_module
 import execution_engine.worker_fallbacks as worker_fallbacks_module
-from execution_engine.agent.tools import GatewayToolClient, PlatformToolClient, ToolClientStub
+from execution_engine.agent.tools import (
+    GatewayToolClient,
+    ModelToolNameClient,
+    PlatformToolClient,
+    ToolClientStub,
+)
 from execution_engine.gateway_client import GatewayLlmClient
+from execution_engine.model_tool_names import (
+    MODEL_TOOL_NAME_PATTERN,
+    allocate_model_tool_names,
+    readable_model_tool_name,
+)
 from execution_engine.readiness import DependencyStatus
 from execution_engine.worker_tool_artifacts import (
     persist_tool_result_artifact,
@@ -47,6 +57,79 @@ GATEWAY_POD_LIST_RESULT = {
     ],
 }
 LONG_LOG_REPEAT_COUNT = 200
+
+
+def test_canonical_tool_name_becomes_the_readable_model_name():
+    names = allocate_model_tool_names({
+        "123098sa90d80s9f_get_target_we92809": {
+            "server_id": "server-1",
+            "tool_name": "get_target",
+        }
+    })
+
+    assert names.model_name("123098sa90d80s9f_get_target_we92809") == "get_target"
+    assert names.internal_name("get_target") == "123098sa90d80s9f_get_target_we92809"
+
+
+@pytest.mark.parametrize(
+    ("canonical_name", "expected"),
+    [
+        ("records.list", "records_list"),
+        ("9patches", "tool_9patches"),
+        ("  cluster///health  ", "cluster_health"),
+        ("", "tool"),
+    ],
+)
+def test_readable_model_tool_name_is_provider_safe(canonical_name: str, expected: str):
+    actual = readable_model_tool_name(canonical_name)
+
+    assert actual == expected
+    assert MODEL_TOOL_NAME_PATTERN.fullmatch(actual)
+
+
+def test_collisions_get_stable_short_suffixes_without_losing_routing_identity():
+    refs = {
+        "opaque-a": {"server_id": "server-a", "tool_name": "search"},
+        "opaque-b": {"server_id": "server-b", "tool_name": "search"},
+    }
+
+    names = allocate_model_tool_names(refs)
+    reversed_names = allocate_model_tool_names(dict(reversed(list(refs.items()))))
+
+    assert names.internal_to_model == reversed_names.internal_to_model
+    assert names.model_name("opaque-a").startswith("search_")
+    assert names.model_name("opaque-b").startswith("search_")
+    assert names.model_name("opaque-a") != names.model_name("opaque-b")
+    assert names.internal_name(names.model_name("opaque-a")) == "opaque-a"
+    assert names.internal_name(names.model_name("opaque-b")) == "opaque-b"
+
+
+def test_native_and_platform_names_are_reserved_from_mcp_collisions():
+    names = allocate_model_tool_names(
+        {"opaque-web": {"server_id": "server-a", "tool_name": "web_search"}},
+        occupied_names={"web_search"},
+    )
+
+    assert names.model_name("opaque-web").startswith("web_search_")
+
+
+def test_readable_names_do_not_shadow_another_tools_internal_alias():
+    names = allocate_model_tool_names({
+        "search": {"server_id": "server-a", "tool_name": "get_target"},
+        "opaque-search": {"server_id": "server-b", "tool_name": "search"},
+    })
+
+    assert names.model_name("opaque-search").startswith("search_")
+    assert names.internal_name("search") == "search"
+    assert names.internal_name(names.model_name("opaque-search")) == "opaque-search"
+
+
+def test_duplicate_exact_references_fail_closed():
+    with pytest.raises(ValueError, match="duplicate exact tool reference"):
+        allocate_model_tool_names({
+            "opaque-a": {"server_id": "server-a", "tool_name": "search"},
+            "opaque-b": {"server_id": "server-a", "tool_name": "search"},
+        })
 
 
 def test_tool_routing_requires_an_exact_authorized_reference():
@@ -157,6 +240,44 @@ class StaticAsyncStream(httpx.AsyncByteStream):
 async def test_tool_client_stub_raises_not_implemented():
     with pytest.raises(NotImplementedError, match="disabled"):
         await ToolClientStub().call_tool("demo", {})
+
+
+@pytest.mark.asyncio
+async def test_model_tool_name_client_routes_readable_and_legacy_internal_names():
+    delegate = MagicMock()
+    delegate.call_tool = AsyncMock(return_value={"model_context": {"ok": True}})
+    delegate.close = AsyncMock()
+    names = allocate_model_tool_names({
+        "opaque_get_target_alias": {
+            "server_id": "server-1",
+            "tool_name": "get_target",
+        }
+    })
+    client = ModelToolNameClient(delegate, names)
+
+    await client.call_tool("get_target", {"id": "target-1"}, call_id="call-1")
+    await client.call_tool(
+        "opaque_get_target_alias",
+        {"id": "target-2"},
+        call_id="call-2",
+    )
+    await client.close()
+
+    assert delegate.call_tool.await_args_list == [
+        call(
+            "opaque_get_target_alias",
+            {"id": "target-1"},
+            call_id="call-1",
+            approval_receipt=None,
+        ),
+        call(
+            "opaque_get_target_alias",
+            {"id": "target-2"},
+            call_id="call-2",
+            approval_receipt=None,
+        ),
+    ]
+    delegate.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio

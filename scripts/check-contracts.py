@@ -17,10 +17,12 @@ MANIFEST_TEXT = json.dumps(MANIFEST, sort_keys=True)
 APP_SOURCE = read("execution_engine/app.py")
 MODELS_SOURCE = read("execution_engine/models.py")
 WORKER_SOURCE = read("execution_engine/worker.py")
+TOOL_AUTHORITY_SOURCE = read("execution_engine/worker_tool_authority.py")
 REASONING_SUMMARY_SOURCE = read("execution_engine/reasoning_summary_events.py")
 ORCH_CLIENT_SOURCE = read("execution_engine/orchestrator_client.py")
 GATEWAY_CLIENT_SOURCE = read("execution_engine/gateway_client.py")
 TOOL_CLIENT_SOURCE = read("execution_engine/agent/tools.py")
+MODEL_TOOL_NAME_SOURCE = read("execution_engine/model_tool_names.py")
 CONFIG_SOURCE = read("execution_engine/config.py")
 REACT_ENGINE_SOURCE = read("execution_engine/agent/react_engine.py")
 APPROVAL_SUMMARY_SOURCE = read("execution_engine/approval_summary.py")
@@ -201,6 +203,14 @@ for field in CONTROL_PLANE_CONTRACT["bootstrapFields"]:
 
 for field in GATEWAY_CONTRACT["streamResponseTypes"]:
     expect_in(MANIFEST_TEXT, field, "Manifest gateway stream type")
+
+for field in GATEWAY_CONTRACT["streamToolSpecFields"]:
+    expect_in(MANIFEST_TEXT, field, "Manifest gateway stream tool-spec field")
+
+expect_in(DOC, "readable `model_name`", "Documented readable model tool name")
+expect_in(TOOL_AUTHORITY_SOURCE, 'sanitized["model_name"] = model_name', "Readable tool spec")
+expect_in(MODEL_TOOL_NAME_SOURCE, "allocate_model_tool_names", "Readable tool name allocation")
+expect_in(TOOL_CLIENT_SOURCE, "self.names.internal_name(tool_name)", "Internal tool routing")
 
 for tool_name in GATEWAY_CONTRACT["internalModelOnlyTools"]:
     expect_in(MANIFEST_TEXT, tool_name, "Manifest internal model-only tool")

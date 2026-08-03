@@ -17,7 +17,11 @@ import execution_engine.app as app_module
 import execution_engine.worker as worker_module
 import execution_engine.worker_tool_authority as worker_tool_authority_module
 from execution_engine.agent.react_engine import ReActAgentEngine
-from execution_engine.agent.tools import CoordinationToolClient, GatewayToolClient
+from execution_engine.agent.tools import (
+    CoordinationToolClient,
+    GatewayToolClient,
+    ModelToolNameClient,
+)
 from execution_engine.app import app
 from execution_engine.approval_summary import build_approval_summary
 from execution_engine.config import Settings, settings
@@ -28,6 +32,7 @@ from execution_engine.examples import (
     EXAMPLE_TARGET_ID,
     EXAMPLE_WORKSPACE_ID,
 )
+from execution_engine.model_tool_names import allocate_model_tool_names
 from execution_engine.models import (
     CommitRequest,
     ContextConfig,
@@ -1724,6 +1729,204 @@ class FakeReActAgentEngine:
             yield chunk
 
 
+class CapturingToolSpecAgentEngine:
+    tool_specs: list[dict[str, object]] = []
+
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    async def run(self, _messages, _llm_config, tool_specs, *_args, **_kwargs):
+        self.__class__.tool_specs = tool_specs
+        yield {"type": "delta", "text": "Done."}
+        yield {
+            "type": "final",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "tool_calls": 0},
+        }
+
+
+@pytest.mark.asyncio
+async def test_worker_keeps_internal_tool_identity_and_adds_readable_model_name(monkeypatch):
+    registry = RunRegistry(max_concurrent_runs=1, durability_store=durability_store())
+    state, _ = await registry.get_or_create(
+        EXAMPLE_WORKSPACE_ID,
+        EXAMPLE_TARGET_ID,
+        "kubernetes",
+        EXAMPLE_SESSION_ID,
+        "91db95f3-e9c3-4a12-921b-b46b5d1f181",
+        EXAMPLE_MESSAGE_ID,
+    )
+    internal_name = "m_123098sa90d80s9f_get_target_we92809"
+    snapshot_payload = execution_snapshot(
+        state.run_id,
+        allowed_tools=[internal_name],
+    ).model_dump()
+    snapshot_payload["tools"]["allowed_tool_refs"][0]["tool_name"] = "get_target"
+    snapshot_payload["tools"]["tool_specs"][0]["tool_name"] = "get_target"
+    snapshot = ExecutionSnapshot.model_validate(snapshot_payload)
+
+    client = MagicMock(spec=OrchestratorClient)
+    client.get_run_event_cursor = AsyncMock(return_value=0)
+    client.bootstrap = AsyncMock(return_value=snapshot)
+    client.get_run_continuation = AsyncMock(return_value=None)
+    client.get_context = AsyncMock(
+        return_value=ContextPackage(
+            messages=[Message(role="user", content="What tools do you have?")]
+        )
+    )
+    client.post_events = AsyncMock()
+    client.commit = AsyncMock()
+
+    gateway_tool_client = MagicMock()
+    gateway_tool_client.close = AsyncMock()
+    monkeypatch.setattr(worker_module, "GatewayLlmClient", MagicMock())
+    monkeypatch.setattr(
+        worker_tool_authority_module,
+        "GatewayToolClient",
+        MagicMock(return_value=gateway_tool_client),
+    )
+    monkeypatch.setattr(worker_module, "ReActAgentEngine", CapturingToolSpecAgentEngine)
+
+    worker = worker_module.Worker(registry, client)
+    await worker._do_execute_run(state)
+
+    assert state.status == RunStatus.COMPLETED
+    assert CapturingToolSpecAgentEngine.tool_specs == [
+        {
+            "name": internal_name,
+            "model_name": "get_target",
+            "description": "Execute tool 'get_target'.",
+            "input_schema": {"type": "object"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_react_validates_readable_model_tool_name_against_advertised_schema():
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {
+                    "type": "tool_call",
+                    "call_id": "call-readable",
+                    "tool": "get_target",
+                    "arguments": {},
+                },
+                {
+                    "type": "final",
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "tool_calls": 1},
+                },
+            ],
+            [
+                {"type": "delta", "text": "The arguments were invalid."},
+                {
+                    "type": "final",
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "tool_calls": 0},
+                },
+            ],
+        ]
+    )
+    tool_client = FakeToolClient()
+    engine = ReActAgentEngine(
+        llm_client,
+        tool_client,
+        react_policy(max_steps=2, max_tool_calls=2),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f182"),
+        tool_capabilities={"get_target": "read"},
+    )
+
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Inspect a target.")],
+            llm_config(),
+            [
+                {
+                    "name": "m_opaque_get_target_alias",
+                    "model_name": "get_target",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"target_id": {"type": "string"}},
+                        "required": ["target_id"],
+                    },
+                }
+            ],
+            asyncio.Event(),
+        )
+    ]
+
+    invalid_result = next(
+        chunk for chunk in chunks if chunk.get("type") == "tool_result"
+    )
+    assert invalid_result["tool"] == "get_target"
+    assert invalid_result["result"]["data"]["code"] == "TOOL_ARGS_INVALID"
+    assert tool_client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_react_routes_valid_readable_tool_call_to_internal_alias():
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {
+                    "type": "tool_call",
+                    "call_id": "call-readable",
+                    "tool": "get_target",
+                    "arguments": {"target_id": "target-1"},
+                },
+                {
+                    "type": "final",
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "tool_calls": 1},
+                },
+            ],
+            [
+                {"type": "delta", "text": "Target inspected."},
+                {
+                    "type": "final",
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "tool_calls": 0},
+                },
+            ],
+        ]
+    )
+    internal_name = "m_opaque_get_target_alias"
+    delegate = FakeToolClient()
+    names = allocate_model_tool_names({
+        internal_name: {"server_id": "server-1", "tool_name": "get_target"}
+    })
+    engine = ReActAgentEngine(
+        llm_client,
+        ModelToolNameClient(delegate, names),
+        react_policy(max_steps=2, max_tool_calls=2),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f183"),
+        tool_capabilities={"get_target": "read", internal_name: "read"},
+    )
+
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Inspect a target.")],
+            llm_config(),
+            [
+                {
+                    "name": internal_name,
+                    "model_name": "get_target",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"target_id": {"type": "string"}},
+                        "required": ["target_id"],
+                    },
+                }
+            ],
+            asyncio.Event(),
+        )
+    ]
+
+    assert delegate.calls == [(internal_name, {"target_id": "target-1"})]
+    assert any(
+        chunk.get("type") == "tool_result" and chunk.get("tool") == "get_target"
+        for chunk in chunks
+    )
+
+
 def posted_event_types(client: MagicMock) -> list[str]:
     event_types: list[str] = []
     for call in client.post_events.await_args_list:
@@ -2892,10 +3095,14 @@ async def test_worker_emits_approval_requested_summary(monkeypatch):
         "91db95f3-e9c3-4a12-921b-b46b5d1f17d4",
         EXAMPLE_MESSAGE_ID,
     )
-    snapshot = execution_snapshot(state.run_id, allowed_tools=["restart_workload"])
+    internal_name = "m_opaque_restart_workload_alias"
+    snapshot = execution_snapshot(state.run_id, allowed_tools=[internal_name])
+    snapshot.tools.allowed_tool_refs = [
+        {"server_id": EXAMPLE_SERVER_ID, "tool_name": "restart_workload"}
+    ]
     snapshot.tools.tool_specs = [
         {
-            "name": "restart_workload",
+            "name": internal_name,
             "server_id": EXAMPLE_SERVER_ID,
             "tool_name": "restart_workload",
             "capability": "write",
@@ -2910,7 +3117,7 @@ async def test_worker_emits_approval_requested_summary(monkeypatch):
         targetId=EXAMPLE_TARGET_ID,
         targetType="kubernetes",
         toolCallId="call-1",
-        toolName="restart_workload",
+        toolName=internal_name,
         summary="Restart Deployment demo/api.",
         arguments={"namespace": "demo", "name": "api", "kind": "Deployment"},
         status="pending",
@@ -2944,6 +3151,11 @@ async def test_worker_emits_approval_requested_summary(monkeypatch):
     await worker._do_execute_run(state)
 
     client.create_tool_approval.assert_awaited_once()
+    assert client.create_tool_approval.await_args.kwargs["tool_name"] == internal_name
+    assert client.create_tool_approval.await_args.kwargs["tool_ref"] == {
+        "serverId": EXAMPLE_SERVER_ID,
+        "toolName": "restart_workload",
+    }
     assert client.create_tool_approval.await_args.kwargs["summary"] == "Restart Deployment demo/api."
     assert any(
         event.type == "tool_approval_requested" and event.payload["summary"] == "Restart Deployment demo/api."
@@ -2964,6 +3176,9 @@ async def test_worker_omits_missing_approval_requested_summary(monkeypatch):
         EXAMPLE_MESSAGE_ID,
     )
     snapshot = execution_snapshot(state.run_id, allowed_tools=["restart_workload"])
+    snapshot.tools.allowed_tool_refs = [
+        {"server_id": EXAMPLE_SERVER_ID, "tool_name": "restart_workload"}
+    ]
     snapshot.tools.tool_specs = [
         {
             "name": "restart_workload",
@@ -3029,6 +3244,9 @@ async def test_worker_preserves_empty_approval_event_summary(monkeypatch):
         EXAMPLE_MESSAGE_ID,
     )
     snapshot = execution_snapshot(state.run_id, allowed_tools=["restart_workload"])
+    snapshot.tools.allowed_tool_refs = [
+        {"server_id": EXAMPLE_SERVER_ID, "tool_name": "restart_workload"}
+    ]
     snapshot.tools.tool_specs = [
         {
             "name": "restart_workload",
