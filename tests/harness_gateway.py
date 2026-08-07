@@ -27,7 +27,8 @@ async def stream(request: Request):
         )
 
         if run_id == EXAMPLE_TOOL_RUN_ID and not has_tool_response:
-            # Emit a tool call
+            # A gateway turn is complete only after a terminal event, including
+            # turns that ask the execution engine to run a tool.
             yield json.dumps({
                 "type": "tool_call",
                 "call_id": "a8b9c070-3cd3-415d-9f89-6f6f54e35d5d",
@@ -35,7 +36,15 @@ async def stream(request: Request):
                 "arguments": {"location": "San Francisco"}
             }) + "\n"
             await asyncio.sleep(0.1)
-            return # Stop here, wait for next call with tool result
+            yield json.dumps({
+                "type": "final",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 1,
+                    "tool_calls": 1,
+                },
+            }) + "\n"
+            return  # Wait for the next request containing the tool result.
 
         if has_tool_response:
             # After tool result, emit final answer
