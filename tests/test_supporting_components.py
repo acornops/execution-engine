@@ -874,20 +874,23 @@ async def test_gateway_llm_client_streams_successful_chunks(monkeypatch: pytest.
     }
 
 
-@pytest.mark.asyncio
-async def test_gateway_llm_client_returns_malformed_chunk_error(monkeypatch: pytest.MonkeyPatch):
+async def collect_gateway_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    stream_data: str,
+) -> list[dict[str, object]]:
     async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, request=request, stream=StaticAsyncStream("not-json\n"))
+        return httpx.Response(200, request=request, stream=StaticAsyncStream(stream_data))
 
     real_async_client = httpx.AsyncClient
     monkeypatch.setattr(
         gateway_client_module.httpx,
         "AsyncClient",
-        lambda *args, **kwargs: real_async_client(*args, transport=httpx.MockTransport(handler), **kwargs),
+        lambda *args, **kwargs: real_async_client(
+            *args, transport=httpx.MockTransport(handler), **kwargs
+        ),
     )
-
     client = GatewayLlmClient(url="http://gateway", token="token")
-    chunks = [
+    return [
         chunk
         async for chunk in client.stream_generation(
             run_id="run-1",
@@ -904,6 +907,11 @@ async def test_gateway_llm_client_returns_malformed_chunk_error(monkeypatch: pyt
         )
     ]
 
+
+@pytest.mark.asyncio
+async def test_gateway_llm_client_returns_malformed_chunk_error(monkeypatch: pytest.MonkeyPatch):
+    chunks = await collect_gateway_stream(monkeypatch, "not-json\n")
+
     assert chunks == [
         {
             "type": "error",
@@ -912,6 +920,60 @@ async def test_gateway_llm_client_returns_malformed_chunk_error(monkeypatch: pyt
             "retryable": True,
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stream_data", "expected"),
+    [
+        (
+            '{"type":"delta","text":"partial"}\n',
+            [
+                {"type": "delta", "text": "partial"},
+                {
+                    "type": "error",
+                    "code": "GATEWAY_INCOMPLETE_STREAM",
+                    "message": "llm-gateway closed the stream before a terminal event.",
+                    "retryable": True,
+                },
+            ],
+        ),
+        (
+            "[]\n",
+            [
+                {
+                    "type": "error",
+                    "code": "GATEWAY_MALFORMED_STREAM_CHUNK",
+                    "message": "llm-gateway emitted a malformed stream chunk.",
+                    "retryable": True,
+                }
+            ],
+        ),
+        (
+            '{"type":"final","usage":{"input_tokens":1,"output_tokens":1,"tool_calls":0}}\n'
+            '{"type":"delta","text":"late"}\n',
+            [
+                {
+                    "type": "final",
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "tool_calls": 0},
+                },
+                {
+                    "type": "error",
+                    "code": "GATEWAY_MALFORMED_STREAM_CHUNK",
+                    "message": "llm-gateway emitted data after the terminal stream event.",
+                    "retryable": True,
+                },
+            ],
+        ),
+    ],
+    ids=["incomplete", "non-object", "after-terminal"],
+)
+async def test_gateway_llm_client_enforces_terminal_stream_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    stream_data: str,
+    expected: list[dict[str, object]],
+) -> None:
+    assert await collect_gateway_stream(monkeypatch, stream_data) == expected
 
 
 @pytest.mark.asyncio

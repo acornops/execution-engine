@@ -20,6 +20,9 @@
 - Preserve deterministic event ordering and terminal commit semantics.
 - Verify write approval interrupt/resume behavior for approved, rejected, expired, and disabled-confirmation paths.
 - Verify stale approved write execution fails with `WRITE_TOOL_OUTCOME_UNKNOWN` and does not call the AgentK again.
+- Verify malformed provider tool JSON receives at most one corrective
+  generation before any tool execution, and that wrong-tool, multiple-call,
+  prose-only, cancelled, or expired corrections execute nothing.
 - Verify outbox retry behavior when event posting fails and after process restart.
 - Verify `/ready` fails when required dependencies fail and `/health` remains shallow liveness only.
 - Verify terminal commit retry behavior after transient control-plane failures and process restart.
@@ -27,6 +30,13 @@
 ## Recovery Expectations
 
 - Prefer explicit retryable errors over silent drops.
+- Aggregate provider usage across every generation in a ReAct run, including
+  malformed correction, ordinary tool turns, guardrail finalization, and
+  approval resume. Keep valid-JSON schema correction, duplicate-call limits,
+  approvals, and write-outcome protections authoritative.
+- Treat malformed, incomplete, or post-terminal gateway streams as terminal
+  errors. Never execute or publish tool calls from a provider turn that ends in
+  an error.
 - Keep terminal-state handling idempotent.
 - Capture new runtime invariants in docs or checks when they become durable.
 - Event delivery uses Redis-backed outbox state at `REDIS_URL`; events are marked delivered only after the control plane acknowledges them.

@@ -120,6 +120,8 @@
         "arguments",
         "provider_state?"
       ],
+      "malformedToolArgumentContract": "OpenAI malformed or non-object function arguments fail before execution as retryable OPENAI_TOOL_ARGUMENTS_INVALID with safe tool/call identity and usage when available; incomplete or conflicting call identity fails non-retryably as OPENAI_TOOL_CALL_INVALID; raw arguments are excluded from errors, logs, and metrics.",
+      "streamTerminalContract": "Execution-engine accepts each generation only after exactly one final or error event; clean EOF before terminal produces retryable GATEWAY_INCOMPLETE_STREAM, post-terminal data is rejected, provider-turn text and calls remain uncommitted on error, and usage is aggregated across all generations and approval resume.",
       "providerContinuationState": "Opaque same-provider continuation metadata is namespaced, JSON-compatible, capped at 32768 bytes, excluded from public run events and normal logs, and persisted only for provider continuation.",
       "localDeterministicStreamEnv": "LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES",
       "toolCallRequestFields": [

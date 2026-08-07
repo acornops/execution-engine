@@ -28,11 +28,14 @@ from execution_engine.agent.skill_loading import (
     is_skill_call,
     resolve_skill_call,
 )
+from execution_engine.agent.stream_usage import ProviderUsageAccumulator
+from execution_engine.agent.tool_argument_retry import MALFORMED_TOOL_ARGUMENT_CODE, ToolArgumentRetryState
 from execution_engine.agent.tool_context import (
     build_evidence_entry,
     build_tool_continuation_state,
     compact_tool_context,
     merge_evidence,
+    unknown_write_outcome_error,
 )
 from execution_engine.agent.tool_validation import (
     preapproval_validation,
@@ -97,7 +100,7 @@ class ReActAgentEngine(AgentEngine):
                 task.cancel()
             if cancel_wait in done:
                 next_chunk.cancel()
-                with suppress(asyncio.CancelledError):
+                with suppress(asyncio.CancelledError, StopAsyncIteration):
                     await next_chunk
                 break
             cancel_wait.cancel()
@@ -245,6 +248,15 @@ class ReActAgentEngine(AgentEngine):
         loop_instruction: str | None = None
         guardrail_reason: str | None = None
         tool_budget_hit = False
+        argument_retry = ToolArgumentRetryState(
+            tool_specs, provider=llm_config.provider,
+            model=llm_config.model, run_id=self.scope.run_id,
+        )
+        provider_usage = ProviderUsageAccumulator(
+            state.get("provider_usage")
+            if "provider_usage" in state
+            else state.get("tool_argument_retry_usage")
+        )
 
         if not continuation_state:
             async for event in preload_referenced_skills(
@@ -439,6 +451,7 @@ class ReActAgentEngine(AgentEngine):
                                 loaded_skill_bytes=skill_state.loaded_bytes,
                                 loaded_skill_instructions=skill_state.loaded_instructions,
                                 pending_tool_call=call,
+                                provider_usage=provider_usage.snapshot(),
                             ),
                         }
                         return
@@ -478,16 +491,7 @@ class ReActAgentEngine(AgentEngine):
                         and isinstance(tool_result.get("full_result"), dict)
                         and tool_result["full_result"].get("outcome") == "unknown"
                     ):
-                        yield {
-                            "type": "error",
-                            "code": "WRITE_TOOL_OUTCOME_UNKNOWN",
-                            "message": (
-                                "The write may have reached the target, but its final "
-                                "outcome could not be confirmed. Inspect the target "
-                                "before retrying this write."
-                            ),
-                            "retryable": False,
-                        }
+                        yield provider_usage.terminal(unknown_write_outcome_error())
                         record_remediation_verification_outcomes(
                             finalize_remediation_verifications(pending_verifications)
                         )
@@ -506,8 +510,8 @@ class ReActAgentEngine(AgentEngine):
                 transcript=transcript,
                 loaded_skill_instructions=skill_state.loaded_instructions,
                 llm_config=llm_config,
-                tool_specs=tool_specs,
-                native_tools=native_tools or [],
+                tool_specs=argument_retry.request_tools(),
+                native_tools=[] if argument_retry.active else native_tools or [],
                 loop_instruction=loop_instruction,
                 cancel_event=cancel_event,
             ):
@@ -533,6 +537,43 @@ class ReActAgentEngine(AgentEngine):
                 elif chunk_type == "delta" and isinstance(chunk.get("text"), str):
                     text_parts.append(str(chunk["text"]))
 
+            if cancel_event.is_set():
+                return
+            provider_usage.collect(buffered)
+            provider_errors = [chunk for chunk in buffered if chunk.get("type") == "error"]
+            malformed_error = (
+                provider_errors[0]
+                if len(provider_errors) == 1
+                and provider_errors[0].get("code") == MALFORMED_TOOL_ARGUMENT_CODE
+                else None
+            )
+            if malformed_error is not None:
+                retry, terminal_event = argument_retry.handle_malformed(
+                    malformed_error,
+                    retry_allowed=time.monotonic() < deadline,
+                )
+                if terminal_event is not None:
+                    yield provider_usage.terminal(terminal_event)
+                    return
+                if retry:
+                    loop_instruction = argument_retry.instruction
+                    continue
+
+            if argument_retry.active:
+                terminal_event = argument_retry.validate_correction(
+                    buffered,
+                    calls,
+                    "".join(text_parts),
+                )
+                if terminal_event is not None:
+                    yield provider_usage.terminal(terminal_event)
+                    return
+
+            provider_error = provider_errors[-1] if provider_errors else None
+            if provider_error is not None:
+                yield provider_usage.terminal(provider_error)
+                return
+
             if calls:
                 transcript.append(assistant_turn("".join(text_parts), calls))
                 remaining = max(max_tool_calls - total_tool_calls, 0)
@@ -551,15 +592,12 @@ class ReActAgentEngine(AgentEngine):
                 for call in calls:
                     if not is_skill_call(str(call["tool"])):
                         yield call
-                for chunk in buffered:
-                    if chunk.get("type") == "error":
-                        yield chunk
                 active_calls = calls
                 next_index = 0
                 continue
 
             for chunk in buffered:
-                yield chunk
+                yield provider_usage.finish(chunk)
             if any(chunk.get("type") in {"final", "error"} for chunk in buffered):
                 record_remediation_verification_outcomes(finalize_remediation_verifications(pending_verifications))
             break
@@ -595,6 +633,7 @@ class ReActAgentEngine(AgentEngine):
             ):
                 if chunk.get("type") == "tool_call":
                     continue
+                chunk = provider_usage.observe(chunk)
                 if chunk.get("type") in {"final", "error"}:
                     record_remediation_verification_outcomes(finalize_remediation_verifications(pending_verifications))
                 yield chunk

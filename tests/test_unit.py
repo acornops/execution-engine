@@ -2175,6 +2175,579 @@ class FakeToolClient:
         return self.result
 
 
+DOCUMENT_TOOL_SPEC = {
+    "name": "workspace.documents.create",
+    "model_name": "acornops_create_document",
+    "description": "Create a PDF or Markdown document.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "markdown": {"type": "string"},
+        },
+        "required": ["title", "markdown"],
+        "additionalProperties": False,
+    },
+}
+DOCUMENT_ARGUMENTS = {"title": "Status", "markdown": "# Status"}
+
+
+def provider_usage(
+    input_tokens: int,
+    output_tokens: int,
+    tool_calls: int = 0,
+) -> dict[str, int]:
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "tool_calls": tool_calls,
+    }
+
+
+def final_event(
+    input_tokens: int,
+    output_tokens: int,
+    tool_calls: int = 0,
+) -> dict[str, object]:
+    return {
+        "type": "final",
+        "usage": provider_usage(input_tokens, output_tokens, tool_calls),
+    }
+
+
+def tool_call_event(
+    *,
+    call_id: str = "call-corrected",
+    tool: str = "acornops_create_document",
+    arguments: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "type": "tool_call",
+        "call_id": call_id,
+        "tool": tool,
+        "arguments": DOCUMENT_ARGUMENTS if arguments is None else arguments,
+    }
+
+
+def text_completion(
+    text: str,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+) -> list[dict[str, object]]:
+    return [
+        {"type": "delta", "text": text},
+        final_event(input_tokens, output_tokens),
+    ]
+
+
+def malformed_document_arguments_event(
+    *,
+    tool: str = "acornops_create_document",
+    usage: dict[str, int] | None = None,
+) -> dict[str, object]:
+    return {
+        "type": "error",
+        "code": "OPENAI_TOOL_ARGUMENTS_INVALID",
+        "message": "Provider returned malformed JSON tool arguments; no tool was executed",
+        "call_id": "call-invalid",
+        "tool": tool,
+        "retryable": True,
+        **({"usage": usage} if usage is not None else {}),
+    }
+
+
+async def run_document_retry_case(
+    llm_client,
+    *,
+    policy: Policy | None = None,
+    cancel_event: asyncio.Event | None = None,
+) -> tuple[list[dict[str, object]], FakeToolClient]:
+    tool_client = FakeToolClient()
+    engine = ReActAgentEngine(
+        llm_client,
+        tool_client,
+        policy or react_policy(),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1800"),
+    )
+    chunks = [
+        chunk
+        async for chunk in engine.run(
+            [Message(role="user", content="Create a status document.")],
+            llm_config(),
+            [DOCUMENT_TOOL_SPEC],
+            cancel_event or asyncio.Event(),
+        )
+    ]
+    return chunks, tool_client
+
+
+@pytest.mark.asyncio
+async def test_react_engine_retries_malformed_arguments_once_and_executes_correction() -> None:
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                malformed_document_arguments_event(
+                    usage=provider_usage(10, 2)
+                )
+            ],
+            [
+                tool_call_event(),
+                final_event(4, 3, 1),
+            ],
+            text_completion(
+                "Created the document.", input_tokens=6, output_tokens=4
+            ),
+        ]
+    )
+    chunks, tool_client = await run_document_retry_case(
+        llm_client,
+        policy=react_policy(max_steps=2, max_tool_calls=2),
+    )
+
+    assert len(llm_client.calls) == 3
+    assert llm_client.calls[1]["tools"] == [DOCUMENT_TOOL_SPEC]
+    assert llm_client.calls[1]["native_tools"] == []
+    assert (
+        "Retry once with exactly one `acornops_create_document` call"
+        in llm_client.calls[1]["runtime_instruction"]
+    )
+    assert tool_client.calls == [
+        (
+            "acornops_create_document",
+            DOCUMENT_ARGUMENTS,
+        )
+    ]
+    assert [chunk["type"] for chunk in chunks].count("tool_call") == 1
+    assert chunks[-1] == {
+        "type": "final",
+        "usage": {
+            "input_tokens": 20,
+            "output_tokens": 9,
+            "tool_calls": 1,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_react_engine_aggregates_usage_across_ordinary_tool_turns() -> None:
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                tool_call_event(call_id="call-document"),
+                final_event(4, 2, 1),
+            ],
+            text_completion(
+                "Created the document.", input_tokens=5, output_tokens=3
+            ),
+        ]
+    )
+
+    chunks, tool_client = await run_document_retry_case(
+        llm_client,
+        policy=react_policy(max_steps=2, max_tool_calls=2),
+    )
+
+    assert len(tool_client.calls) == 1
+    assert chunks[-1] == {
+        "type": "final",
+        "usage": {"input_tokens": 9, "output_tokens": 5, "tool_calls": 1},
+    }
+
+
+@pytest.mark.asyncio
+async def test_react_engine_discards_provider_turn_calls_and_text_on_terminal_error() -> None:
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                {"type": "delta", "text": "I will create it."},
+                tool_call_event(call_id="call-document"),
+                {
+                    "type": "error",
+                    "code": "PROVIDER_UNAVAILABLE",
+                    "message": "Provider stream interrupted.",
+                    "retryable": True,
+                    "usage": provider_usage(4, 2, 1),
+                },
+            ]
+        ]
+    )
+
+    chunks, tool_client = await run_document_retry_case(llm_client)
+
+    assert tool_client.calls == []
+    assert not any(chunk.get("type") in {"delta", "tool_call"} for chunk in chunks)
+    assert chunks[-1] == {
+        "type": "error",
+        "code": "PROVIDER_UNAVAILABLE",
+        "message": "Provider stream interrupted.",
+        "retryable": True,
+        "usage": {"input_tokens": 4, "output_tokens": 2, "tool_calls": 1},
+    }
+
+
+@pytest.mark.asyncio
+async def test_react_engine_exhausts_after_second_malformed_argument_response() -> None:
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                malformed_document_arguments_event(
+                    usage=provider_usage(5, 1)
+                )
+            ],
+            [
+                malformed_document_arguments_event(
+                    usage=provider_usage(4, 2)
+                )
+            ],
+        ]
+    )
+    chunks, tool_client = await run_document_retry_case(llm_client)
+
+    assert len(llm_client.calls) == 2
+    assert tool_client.calls == []
+    assert chunks[-1] == {
+        "type": "error",
+        "code": "OPENAI_TOOL_ARGUMENTS_INVALID",
+        "message": (
+            "The model returned malformed arguments for `acornops_create_document` "
+            "after one automatic retry. No tool was executed."
+        ),
+        "retryable": True,
+        "usage": {"input_tokens": 9, "output_tokens": 3, "tool_calls": 0},
+    }
+
+
+@pytest.mark.asyncio
+async def test_react_engine_preserves_provider_error_during_argument_correction() -> None:
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                malformed_document_arguments_event(
+                    usage=provider_usage(3, 1)
+                )
+            ],
+            [
+                {
+                    "type": "error",
+                    "code": "OPENAI_ERROR",
+                    "message": "Provider temporarily unavailable",
+                    "retryable": True,
+                    "usage": provider_usage(2, 0),
+                }
+            ],
+        ]
+    )
+
+    chunks, tool_client = await run_document_retry_case(llm_client)
+
+    assert len(llm_client.calls) == 2
+    assert tool_client.calls == []
+    assert chunks[-1] == {
+        "type": "error",
+        "code": "OPENAI_ERROR",
+        "message": "Provider temporarily unavailable",
+        "retryable": True,
+        "usage": {"input_tokens": 5, "output_tokens": 1, "tool_calls": 0},
+    }
+
+
+@pytest.mark.asyncio
+async def test_react_engine_preserves_retry_usage_through_guardrail_finalization() -> None:
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                malformed_document_arguments_event(
+                    usage=provider_usage(3, 1)
+                )
+            ],
+            [
+                tool_call_event(),
+                final_event(4, 2, 1),
+            ],
+            text_completion(
+                "Created the document.", input_tokens=5, output_tokens=3
+            ),
+        ]
+    )
+
+    chunks, tool_client = await run_document_retry_case(
+        llm_client,
+        policy=react_policy(max_steps=1, max_tool_calls=2),
+    )
+
+    assert len(tool_client.calls) == 1
+    assert "step_limit" in llm_client.calls[-1]["runtime_instruction"]
+    assert chunks[-1] == {
+        "type": "final",
+        "usage": {"input_tokens": 12, "output_tokens": 6, "tool_calls": 1},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "correction_stream",
+    [
+        [
+            {"type": "delta", "text": "I could not create it."},
+            final_event(2, 2),
+        ],
+        [
+            tool_call_event(call_id="wrong-tool", tool="restart_workload", arguments={}),
+            final_event(2, 2, 1),
+        ],
+        [
+            tool_call_event(
+                call_id="call-one",
+                arguments={"title": "One", "markdown": "# One"},
+            ),
+            tool_call_event(
+                call_id="call-two",
+                arguments={"title": "Two", "markdown": "# Two"},
+            ),
+            final_event(2, 2, 2),
+        ],
+        [
+            {
+                "type": "error",
+                "code": "OPENAI_TOOL_CALL_INVALID",
+                "message": "Provider returned an invalid tool call; no tool was executed",
+                "retryable": False,
+                "usage": provider_usage(2, 1),
+            }
+        ],
+    ],
+    ids=["prose-only", "wrong-tool", "multiple-calls", "invalid-call-identity"],
+)
+async def test_react_engine_rejects_invalid_malformed_argument_corrections(
+    correction_stream: list[dict[str, object]],
+) -> None:
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [malformed_document_arguments_event()],
+            correction_stream,
+        ]
+    )
+    chunks, tool_client = await run_document_retry_case(llm_client)
+
+    assert len(llm_client.calls) == 2
+    assert tool_client.calls == []
+    assert chunks[-1]["code"] == "OPENAI_TOOL_ARGUMENTS_INVALID"
+    assert chunks[-1]["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_react_engine_does_not_retry_unadvertised_malformed_tool() -> None:
+    llm_client = FakeStreamingLlmClient(
+        streams=[[malformed_document_arguments_event(tool="unknown_tool")]]
+    )
+    chunks, tool_client = await run_document_retry_case(llm_client)
+
+    assert len(llm_client.calls) == 1
+    assert tool_client.calls == []
+    assert chunks[-1]["tool"] == "unknown_tool"
+
+
+@pytest.mark.asyncio
+async def test_react_engine_preserves_prior_retry_usage_for_later_unadvertised_tool() -> None:
+    llm_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                malformed_document_arguments_event(
+                    usage=provider_usage(3, 1)
+                )
+            ],
+            [
+                tool_call_event(),
+                final_event(4, 2, 1),
+            ],
+            [
+                malformed_document_arguments_event(
+                    tool="unknown_tool",
+                    usage=provider_usage(5, 1),
+                )
+            ],
+        ]
+    )
+
+    chunks, tool_client = await run_document_retry_case(
+        llm_client,
+        policy=react_policy(max_steps=2, max_tool_calls=2),
+    )
+
+    assert len(tool_client.calls) == 1
+    assert chunks[-1]["tool"] == "unknown_tool"
+    assert chunks[-1]["usage"] == {
+        "input_tokens": 12,
+        "output_tokens": 4,
+        "tool_calls": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_react_engine_cancellation_prevents_malformed_argument_retry() -> None:
+    cancel_event = asyncio.Event()
+
+    class CancellingMalformedClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def stream_generation(self, **kwargs):
+            self.calls.append(kwargs)
+            yield malformed_document_arguments_event()
+            cancel_event.set()
+
+    llm_client = CancellingMalformedClient()
+    _, tool_client = await run_document_retry_case(
+        llm_client,
+        cancel_event=cancel_event,
+    )
+
+    assert len(llm_client.calls) == 1
+    assert tool_client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_react_engine_cancellation_stops_active_argument_correction() -> None:
+    cancel_event = asyncio.Event()
+
+    class CancellingCorrectionClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def stream_generation(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                yield malformed_document_arguments_event()
+                return
+            cancel_event.set()
+            if False:
+                yield {}
+
+    llm_client = CancellingCorrectionClient()
+    chunks, tool_client = await run_document_retry_case(
+        llm_client,
+        cancel_event=cancel_event,
+    )
+
+    assert len(llm_client.calls) == 2
+    assert tool_client.calls == []
+    assert not any(chunk.get("type") == "error" for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_react_engine_preserves_retry_usage_across_approval_resume() -> None:
+    tool_spec = {"name": "workspace.restart", "model_name": "restart_workload"}
+    first_client = FakeStreamingLlmClient(
+        streams=[
+            [
+                malformed_document_arguments_event(
+                    tool="restart_workload",
+                    usage=provider_usage(3, 1),
+                )
+            ],
+            [
+                tool_call_event(
+                    call_id="call-restart",
+                    tool="restart_workload",
+                    arguments={"namespace": "demo"},
+                ),
+                final_event(4, 2, 1),
+            ],
+        ]
+    )
+    first_engine = ReActAgentEngine(
+        first_client,
+        FakeToolClient(),
+        react_policy(max_steps=2, max_tool_calls=2),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1807"),
+        tool_capabilities={"restart_workload": "write"},
+        confirmation_required_for_write=True,
+    )
+    first_chunks = [
+        chunk
+        async for chunk in first_engine.run(
+            [Message(role="user", content="Restart the workload.")],
+            llm_config(),
+            [tool_spec],
+            asyncio.Event(),
+        )
+    ]
+    interrupt = next(chunk for chunk in first_chunks if chunk["type"] == "approval_interrupt")
+
+    assert interrupt["continuation"]["provider_usage"] == {
+        "input_tokens": 7,
+        "output_tokens": 3,
+        "tool_calls": 1,
+    }
+
+    resume_client = FakeStreamingLlmClient(
+        streams=[
+            text_completion(
+                "Restart completed.", input_tokens=5, output_tokens=3
+            )
+        ]
+    )
+    resume_engine = ReActAgentEngine(
+        resume_client,
+        FakeToolClient(),
+        react_policy(max_steps=2, max_tool_calls=2),
+        react_scope("91db95f3-e9c3-4a12-921b-b46b5d1f1807"),
+        tool_capabilities={"restart_workload": "write"},
+        confirmation_required_for_write=True,
+    )
+    resumed_chunks = [
+        chunk
+        async for chunk in resume_engine.run(
+            [],
+            llm_config(),
+            [tool_spec],
+            asyncio.Event(),
+            continuation_state=interrupt["continuation"],
+            resume_tool_result={
+                "call_id": "call-restart",
+                "tool": "restart_workload",
+                "arguments": {"namespace": "demo"},
+                "result": {"status": "ok"},
+                "is_error": False,
+            },
+        )
+    ]
+
+    assert resumed_chunks[-1] == {
+        "type": "final",
+        "usage": {"input_tokens": 12, "output_tokens": 6, "tool_calls": 1},
+    }
+
+
+@pytest.mark.asyncio
+async def test_react_engine_runtime_expiry_prevents_malformed_argument_retry(
+    monkeypatch,
+) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(react_engine_module.time, "monotonic", lambda: clock[0])
+
+    class ExpiringMalformedClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def stream_generation(self, **kwargs):
+            self.calls.append(kwargs)
+            yield malformed_document_arguments_event()
+            clock[0] = 1.1
+
+    llm_client = ExpiringMalformedClient()
+    chunks, tool_client = await run_document_retry_case(
+        llm_client,
+        policy=react_policy(max_runtime_ms=1000),
+    )
+
+    assert len(llm_client.calls) == 1
+    assert tool_client.calls == []
+    assert chunks[-1]["code"] == "OPENAI_TOOL_ARGUMENTS_INVALID"
+    assert "could not start before the runtime deadline" in chunks[-1]["message"]
+
+
 @pytest.mark.asyncio
 async def test_react_engine_loads_skill_before_same_turn_tool_calls():
     llm_client = FakeStreamingLlmClient(

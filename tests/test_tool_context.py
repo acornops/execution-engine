@@ -45,11 +45,17 @@ def test_approval_continuation_preserves_pending_verification_without_synthetic_
         loaded_skill_bytes=0,
         loaded_skill_instructions=[],
         pending_tool_call={"tool": "patch_workload"},
+        provider_usage={"input_tokens": 7, "output_tokens": 3, "tool_calls": 1},
     )
 
     assert state["pending_verifications"] == pending
     assert state["transcript"] == transcript
     assert state["tool_results"] == []
+    assert state["provider_usage"] == {
+        "input_tokens": 7,
+        "output_tokens": 3,
+        "tool_calls": 1,
+    }
 
 
 def test_structural_compaction_returns_valid_bounded_data_without_prefix_slicing():

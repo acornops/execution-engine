@@ -69,6 +69,11 @@ gateway_stream_malformed_chunks_total = Counter(
     "execution_engine_gateway_stream_malformed_chunks_total",
     "Malformed LLM gateway stream chunks",
 )
+tool_argument_retries_total = Counter(
+    "execution_engine_tool_argument_retries_total",
+    "Malformed provider tool argument correction outcomes",
+    ["provider", "outcome"],
+)
 reasoning_summary_events_forwarded_total = Counter(
     "execution_engine_reasoning_summary_events_forwarded_total",
     "Provider reasoning summary run events forwarded by execution engine",

@@ -235,6 +235,7 @@ def build_tool_continuation_state(
     loaded_skill_bytes: int,
     loaded_skill_instructions: list[str],
     pending_tool_call: dict[str, Any],
+    provider_usage: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Build approval state including the whole open assistant tool-call turn."""
     return {
@@ -252,4 +253,22 @@ def build_tool_continuation_state(
         "loaded_skill_bytes": loaded_skill_bytes,
         "loaded_skill_instructions": loaded_skill_instructions,
         "pending_tool_call": pending_tool_call,
+        **(
+            {"provider_usage": provider_usage}
+            if provider_usage
+            else {}
+        ),
+    }
+
+
+def unknown_write_outcome_error() -> dict[str, Any]:
+    """Return the terminal event for a write whose outcome cannot be confirmed."""
+    return {
+        "type": "error",
+        "code": "WRITE_TOOL_OUTCOME_UNKNOWN",
+        "message": (
+            "The write may have reached the target, but its final outcome could not "
+            "be confirmed. Inspect the target before retrying this write."
+        ),
+        "retryable": False,
     }

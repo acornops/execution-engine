@@ -533,6 +533,8 @@ class Worker:
                                 usage.tool_calls = observed_tool_calls
                         elif chunk["type"] == "error":
                             summary_events.flush(force=True)
+                            if isinstance(chunk.get("usage"), dict):
+                                usage = Usage(**chunk["usage"])
                             if state.cancel_event.is_set():
                                 finish_cancelled_run()
                                 return

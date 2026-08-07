@@ -78,6 +78,20 @@ The execution engine owns run execution and talks only to the control plane and 
 ## LLM-Gateway Boundary Notes
 
 - Model streaming and MCP tool calls use the run-scoped JWT minted by the control plane.
+- A retryable `OPENAI_TOOL_ARGUMENTS_INVALID` event is intercepted before any
+  provider-turn tool executes. For an advertised tool, execution-engine
+  discards that uncommitted turn and allows exactly one corrective generation
+  with only the attempted tool advertised. The correction must contain exactly
+  one valid same-tool call and no prose; otherwise the run fails without tool
+  execution. Usage from both generations is retained.
+- Every gateway generation must end in exactly one `final` or `error` event.
+  Incomplete, malformed, and post-terminal streams fail closed; text and tool
+  calls from an errored provider turn remain uncommitted and no tool executes.
+- Usage is aggregated across all generations in the run and carried through
+  approval continuation state before being attached to the terminal event.
+- Valid JSON that fails the advertised schema remains `TOOL_ARGS_INVALID` and
+  uses the existing ReAct correction loop. Tool execution failures, writes, and
+  ambiguous outcomes are never replayed by malformed-argument correction.
 - Model streaming sends exactly one trusted `runtime_instruction` plus a typed,
   provider-neutral `transcript`; transcript roles are user, assistant, and
   grouped tool results. The gateway owns every provider-native serialization.

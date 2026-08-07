@@ -19,6 +19,17 @@ def _http_error_detail(error: httpx.HTTPStatusError) -> str:
         return "response body unavailable"
 
 
+def _malformed_stream_event(message: str) -> dict[str, object]:
+    gateway_stream_malformed_chunks_total.inc()
+    gateway_streams_total.labels(result="malformed_chunk").inc()
+    return {
+        "type": "error",
+        "code": "GATEWAY_MALFORMED_STREAM_CHUNK",
+        "message": message,
+        "retryable": True,
+    }
+
+
 class GatewayLlmClient:
     """
     Handles streaming generations from the Execution Gateway.
@@ -156,22 +167,38 @@ class GatewayLlmClient:
                     if response.status_code >= 400:
                         await response.aread()
                     response.raise_for_status()
+                    saw_terminal = False
                     async for line in response.aiter_lines():
                         if not line:
                             continue
                         try:
                             data = json.loads(line)
-                            yield data
                         except json.JSONDecodeError:
-                            gateway_stream_malformed_chunks_total.inc()
-                            gateway_streams_total.labels(result="malformed_chunk").inc()
-                            yield {
-                                "type": "error",
-                                "code": "GATEWAY_MALFORMED_STREAM_CHUNK",
-                                "message": "llm-gateway emitted a malformed stream chunk.",
-                                "retryable": True,
-                            }
+                            yield _malformed_stream_event(
+                                "llm-gateway emitted a malformed stream chunk."
+                            )
                             return
+                        if not isinstance(data, dict) or not isinstance(data.get("type"), str):
+                            yield _malformed_stream_event(
+                                "llm-gateway emitted a malformed stream chunk."
+                            )
+                            return
+                        if saw_terminal:
+                            yield _malformed_stream_event(
+                                "llm-gateway emitted data after the terminal stream event."
+                            )
+                            return
+                        saw_terminal = data["type"] in {"final", "error"}
+                        yield data
+                    if not saw_terminal:
+                        gateway_streams_total.labels(result="incomplete").inc()
+                        yield {
+                            "type": "error",
+                            "code": "GATEWAY_INCOMPLETE_STREAM",
+                            "message": "llm-gateway closed the stream before a terminal event.",
+                            "retryable": True,
+                        }
+                        return
                 gateway_streams_total.labels(result="success").inc()
         except httpx.ReadTimeout:
             gateway_streams_total.labels(result="timeout").inc()
