@@ -5,6 +5,7 @@ from typing import Any, AsyncGenerator, Dict, List
 
 import httpx
 
+from execution_engine.capacity import authority_request_hook
 from execution_engine.config import settings
 from execution_engine.internal_transport import httpx_tls_kwargs
 from execution_engine.util.metrics import gateway_stream_malformed_chunks_total, gateway_streams_total
@@ -161,7 +162,10 @@ class GatewayLlmClient:
             pool=self.timeout,
         )
         try:
-            async with httpx.AsyncClient(headers=self.headers, timeout=timeout, **httpx_tls_kwargs()) as client:
+            async with httpx.AsyncClient(
+                event_hooks={"request": [authority_request_hook]}, headers=self.headers, timeout=timeout,
+                **httpx_tls_kwargs(),
+            ) as client:
                 url = f"{self.url}/api/v1/llm/generations:stream"
                 async with client.stream("POST", url, json=payload) as response:
                     if response.status_code >= 400:

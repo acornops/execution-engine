@@ -8,6 +8,7 @@ from urllib.parse import quote
 import httpx
 from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_delay, wait_random_exponential
 
+from execution_engine.capacity import authority_request_hook
 from execution_engine.config import settings
 from execution_engine.durability import DurabilityStore
 from execution_engine.internal_transport import httpx_tls_kwargs
@@ -77,7 +78,19 @@ class OrchestratorClient:
             write=10.0,
             pool=5.0,
         )
-        self.client = httpx.AsyncClient(headers=self.headers, timeout=timeout, **httpx_tls_kwargs())
+        self.client = httpx.AsyncClient(
+            headers=self.headers, timeout=timeout, event_hooks={"request": [authority_request_hook]},
+            **httpx_tls_kwargs(),
+        )
+
+    async def capacity(self, run_id: str, action: str, body: dict) -> dict:
+        """Send an authority transition once; uncertain operations are never replayed."""
+        response = await self.client.post(
+            f"{self.base_url}{INTERNAL_CONTROL_PLANE_PREFIX}/runs/{quote(run_id, safe='')}/capacity/{action}",
+            json=body,
+        )
+        response.raise_for_status()
+        return response.json()
 
     async def health(self) -> None:
         """Checks basic orchestrator reachability."""
@@ -175,6 +188,15 @@ class OrchestratorClient:
         )
         response.raise_for_status()
         return ToolApproval.model_validate(response.json())
+
+    async def save_dependency_wait(self, run_id: str, state: dict) -> None:
+        from execution_engine.capacity import current_authority
+        authority = current_authority.get()
+        response = await self.client.post(
+            f"{self.base_url}{INTERNAL_CONTROL_PLANE_PREFIX}/runs/{run_id}/dependency-wait",
+            json={"generation": authority.generation if authority else 0, "state": state},
+        )
+        response.raise_for_status()
 
     async def get_run_continuation(self, run_id: str) -> RunContinuation | None:
         """Fetches a paused run continuation, if one exists."""

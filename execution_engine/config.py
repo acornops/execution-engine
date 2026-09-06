@@ -13,6 +13,7 @@ DEFAULT_REDIS_URL = "redis://localhost:6379/1"
 
 
 class Settings(BaseSettings):
+    WORKSPACE_CAPACITY_ENABLED: bool = False
     """Application settings loaded from environment variables or a local .env file."""
 
     model_config = SettingsConfigDict(env_file=".env")

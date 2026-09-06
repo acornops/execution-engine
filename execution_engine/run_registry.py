@@ -6,9 +6,12 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Dict, Optional, Tuple
 
+from execution_engine.capacity import current_authority
+from execution_engine.config import settings
 from execution_engine.durability import TERMINAL_STATUSES, DurabilityStore
 from execution_engine.models import CommitRequest, Event, Timing, Usage
 from execution_engine.orchestrator_client import OrchestratorClient
+from execution_engine.run_scheduling import enqueue_run, finish_execution, refill_queued_runs, resume_run
 from execution_engine.util.logging import logger
 from execution_engine.util.metrics import event_outbox_pending, terminal_commits_pending, terminal_commits_total
 
@@ -17,6 +20,7 @@ class RunStatus(str, Enum):
     """Possible statuses for a run."""
     QUEUED = "queued"
     RUNNING = "running"
+    WAITING_FOR_DEPENDENCIES = "waiting_for_dependencies"
     WAITING_FOR_APPROVAL = "waiting_for_approval"
     CANCELLING = "cancelling"
     COMPLETED = "completed"
@@ -88,6 +92,8 @@ class RunState:
         self.target_type = target_type
         self.session_id = session_id
         self.run_id = run_id
+        self.capacity_owner_id = uuid.uuid4().hex
+        self.resume_requested_at: datetime | None = None
         self.message_id = message_id
         self.workflow_id = workflow_id
         self.execution_id = execution_id
@@ -150,6 +156,9 @@ class RunRegistry:
         self._run_id_to_key: Dict[str, RunKey] = {}
         self._lock = asyncio.Lock()
         self._queue = asyncio.Queue(maxsize=max_concurrent_runs * 2)
+        self._scheduled: set[str] = set()
+        self._queued: set[str] = set()
+        self._pending_resumes: set[str] = set()
         self.max_concurrent_runs = max_concurrent_runs
         self.durability_store = durability_store
         self.terminal_run_ttl_seconds = terminal_run_ttl_seconds
@@ -341,25 +350,44 @@ class RunRegistry:
             return self._runs.get(key)
         return None
 
+    def forget_local_run(self, run_id: str) -> None:
+        """Discard a non-owning replica's cache so redispatch reads durable truth."""
+        key = self._run_id_to_key.pop(run_id, None)
+        if key is not None:
+            self._runs.pop(key, None)
+
     async def enqueue(self, run_id: str) -> bool:
-        """
-        Adds a run to the internal execution queue.
+        return enqueue_run(self, run_id)
 
-        Args:
-            run_id: The run identifier to enqueue.
+    async def resume(self, state: RunState) -> bool:
+        return resume_run(self, state)
 
-        Returns:
-            True if enqueued successfully, False if the queue is full.
-        """
+    def refill_queued_runs(self, exclude_run_id: str | None = None) -> int:
         try:
-            self._queue.put_nowait(run_id)
-            return True
-        except asyncio.QueueFull:
-            return False
+            return refill_queued_runs(self, exclude_run_id)
+        except Exception:
+            logger.exception("Durable queued-run refill failed; pending work remains recoverable")
+            return 0
+
+    async def requeue(self, run_id: str) -> None:
+        """Keep an already accepted run pending even if new dispatch filled the queue."""
+        self._scheduled.discard(run_id)
+        self._queue.put_nowait(run_id)
+        self._queued.add(run_id)
+
+    def execution_done(self, run_id: str) -> None:
+        finish_execution(self, run_id)
+
+    def save_authority(self, authority) -> None:
+        if self.durability_store:
+            self.durability_store.save_authority(authority)
 
     async def dequeue(self) -> str:
         """Waits for and returns the next run_id from the queue."""
-        return await self._queue.get()
+        run_id = await self._queue.get()
+        self._queued.discard(run_id)
+        self._scheduled.add(run_id)
+        return run_id
 
     def task_done(self) -> None:
         """Signals that a previously enqueued task is complete."""
@@ -376,6 +404,8 @@ class RunRegistry:
 
     def persist_state(self, state: RunState) -> None:
         """Persists recoverable run metadata when durability is enabled."""
+        if state.status == RunStatus.RUNNING or state.status.value in TERMINAL_STATUSES:
+            state.resume_requested_at = None
         if not self.durability_store:
             return
         self.durability_store.upsert_run(
@@ -398,10 +428,12 @@ class RunRegistry:
             started_at=state.started_at,
             ended_at=state.ended_at,
         )
+        if state.status.value in TERMINAL_STATUSES or state.status == RunStatus.RUNNING:
+            self.durability_store.clear_resume_request(state.run_id)
         if state.status.value in TERMINAL_STATUSES:
-            self.durability_store.release_run_lock(state.run_id)
-        if state.status == RunStatus.WAITING_FOR_APPROVAL:
-            self.durability_store.release_run_lock(state.run_id)
+            self.durability_store.release_run_lock(state.run_id, self._owner_id)
+        if state.status in {RunStatus.WAITING_FOR_APPROVAL, RunStatus.WAITING_FOR_DEPENDENCIES}:
+            self.durability_store.release_run_lock(state.run_id, self._owner_id)
         if state.status == RunStatus.RUNNING and not self.durability_store.run_has_lock(state.run_id):
             self.durability_store.acquire_run_lock(
                 state.run_id,
@@ -421,9 +453,18 @@ class RunRegistry:
         if not self.durability_store:
             return 0
 
+        self.refill_queued_runs()
+        if settings.WORKSPACE_CAPACITY_ENABLED:
+            return 0
         recovered = 0
         for persisted in self.durability_store.list_active_runs():
+            if not settings.WORKSPACE_CAPACITY_ENABLED and self.durability_store.run_has_lock(persisted.run_id):
+                continue
+            if persisted.status == "queued":
+                continue
             if self.durability_store.run_has_lock(persisted.run_id):
+                continue
+            if settings.WORKSPACE_CAPACITY_ENABLED:
                 continue
             ended_at = datetime.now(UTC)
             started_at = persisted.started_at or persisted.created_at
@@ -495,7 +536,11 @@ class RunRegistry:
                 pending_events = self.durability_store.list_pending_events(run_id, 100)
                 if not pending_events:
                     break
-                await orchestrator_client.post_events(run_id, pending_events)
+                token = current_authority.set(self.durability_store.load_authority(run_id))
+                try:
+                    await orchestrator_client.post_events(run_id, pending_events)
+                finally:
+                    current_authority.reset(token)
                 self.durability_store.mark_events_delivered(run_id, [event.seq for event in pending_events])
                 event_outbox_pending.set(self.durability_store.pending_event_count())
                 delivered += len(pending_events)
@@ -541,7 +586,11 @@ class RunRegistry:
         for pending in pending_commits:
             self.durability_store.mark_terminal_commit_attempt(pending.run_id)
             try:
-                await orchestrator_client.commit(pending.run_id, pending.commit)
+                token = current_authority.set(self.durability_store.load_authority(pending.run_id))
+                try:
+                    await orchestrator_client.commit(pending.run_id, pending.commit)
+                finally:
+                    current_authority.reset(token)
             except Exception:
                 terminal_commits_total.labels(result="failure").inc()
                 logger.warning(f"Terminal commit retry failed for run {pending.run_id}")

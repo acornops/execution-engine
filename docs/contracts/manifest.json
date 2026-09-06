@@ -1,4 +1,6 @@
 {
+  "workspaceCapacityContractVersion": 1,
+  "workspaceCapacityHeaders": ["x-acornops-execution-owner", "x-acornops-execution-generation"],
   "repo": "execution-engine",
   "version": 1,
   "executionContractVersion": 3,

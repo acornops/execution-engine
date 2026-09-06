@@ -125,6 +125,7 @@ async def _terminal_commit_retry_loop() -> None:
     """Retries durable terminal commits until the control plane acknowledges them."""
     while True:
         try:
+            registry.refill_queued_runs()
             delivered = await registry.flush_pending_terminal_commits(orchestrator_client)
             if delivered:
                 logger.info(f"Delivered {delivered} pending terminal commits")
@@ -224,10 +225,9 @@ async def start_run(request: RunRequest) -> Response:
         raise HTTPException(status_code=409, detail=str(e))
 
     if not created:
-        if state.status == RunStatus.WAITING_FOR_APPROVAL:
-            state.status = RunStatus.QUEUED
-            registry.persist_state(state)
-            enqueued = await registry.enqueue(request.run_id)
+        if state.status in {RunStatus.QUEUED, RunStatus.WAITING_FOR_APPROVAL, RunStatus.WAITING_FOR_DEPENDENCIES}:
+            enqueued = (await registry.enqueue(request.run_id) if state.status == RunStatus.QUEUED
+                        else await registry.resume(state))
             if not enqueued:
                 dispatch_requests_total.labels(result="rejected_queue_full").inc()
                 raise HTTPException(status_code=429, detail="Engine overloaded")
@@ -297,7 +297,8 @@ async def cancel_run(
 @app.get("/health")
 async def health() -> dict:
     """Simple health check endpoint."""
-    return {"status": "ok", "version": APP_VERSION}
+    return {"status": "ok", "version": APP_VERSION, "capacity_contract_version": 1,
+            "capacity_enabled": settings.WORKSPACE_CAPACITY_ENABLED}
 
 
 @app.get("/ready")

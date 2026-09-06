@@ -76,6 +76,14 @@ class InMemoryRedis:
         self.sets: dict[str, set[str]] = {}
         self.zsets: dict[str, dict[str, float]] = {}
 
+    def eval(self, script, numkeys, key, owner):
+        if self.get(key) == owner:
+            return self.delete(key)
+        return 0
+
+    def hscan_iter(self, name, count=100):
+        yield from self.hgetall(name).items()
+
     def hset(self, name: str, key: str, value: str) -> int:
         self.hashes.setdefault(name, {})[key] = value
         return 1
@@ -1023,7 +1031,7 @@ async def test_run_registry_recovers_stale_active_runs():
     state.status = RunStatus.RUNNING
     state.started_at = datetime.now(UTC) - timedelta(seconds=30)
     registry.persist_state(state)
-    store.release_run_lock(state.run_id)
+    store.release_run_lock(state.run_id, registry._owner_id)
 
     recovered_registry = RunRegistry(max_concurrent_runs=2, durability_store=store)
     client = MagicMock(spec=OrchestratorClient)

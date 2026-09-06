@@ -35,6 +35,10 @@ class RedisLike(Protocol):
         """Read all fields from a Redis hash."""
         ...
 
+    def hscan_iter(self, name: str, count: int = 100) -> Iterable[tuple[str, str]]:
+        """Incrementally scan hash fields without allocating the entire hash."""
+        ...
+
     def hkeys(self, name: str) -> list[str]:
         """List field names in a Redis hash."""
         ...
@@ -257,13 +261,32 @@ class DurabilityStore:
         """Acquires the run execution lock if no live owner exists."""
         return bool(self.redis.set(self._run_lock_key(run_id), owner, ex=ttl_seconds, nx=True))
 
+    def run_lock_owner(self, run_id: str) -> str | None:
+        """Read the current coordination owner without treating Redis as CP authority."""
+        return self.redis.get(self._run_lock_key(run_id))
+
     def run_has_lock(self, run_id: str) -> bool:
         """Returns true when a run has an unexpired execution lock."""
         return self.redis.get(self._run_lock_key(run_id)) is not None
 
-    def release_run_lock(self, run_id: str) -> None:
-        """Releases the run execution lock."""
-        self.redis.delete(self._run_lock_key(run_id))
+    def release_run_lock(self, run_id: str, owner: str) -> None:
+        """Atomically release only the caller's lock, never a replacement owner."""
+        self.redis.eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+            1, self._run_lock_key(run_id), owner,
+        )
+
+    def save_authority(self, authority) -> None:
+        """Persist cleanup identity independently of volatile task context."""
+        from execution_engine.config import settings
+        self.redis.set(f"{self.key_prefix}:authority:{authority.run_id}",
+                       json.dumps({"owner_id": authority.owner_id, "generation": authority.generation}),
+                       ex=settings.TERMINAL_COMMIT_RETENTION_SECONDS)
+
+    def load_authority(self, run_id: str):
+        from execution_engine.capacity import Authority
+        value = self.redis.get(f"{self.key_prefix}:authority:{run_id}")
+        return Authority(run_id, **json.loads(value)) if value else None
 
     def upsert_run(
         self,
@@ -316,6 +339,35 @@ class DurabilityStore:
                 separators=(",", ":"),
             ),
         )
+
+    def request_resume(self, run_id: str) -> None:
+        from execution_engine.config import settings
+        self.redis.set(f"{self.key_prefix}:resume:{run_id}", _to_iso(),
+                       ex=settings.TERMINAL_COMMIT_RETENTION_SECONDS, nx=True)
+
+    def resume_request_time(self, run_id: str) -> datetime | None:
+        return _parse_iso(self.redis.get(f"{self.key_prefix}:resume:{run_id}"))
+
+    def resume_requested(self, run_id: str) -> bool:
+        return self.redis.get(f"{self.key_prefix}:resume:{run_id}") is not None
+
+    def clear_resume_request(self, run_id: str) -> None:
+        self.redis.delete(f"{self.key_prefix}:resume:{run_id}")
+
+    def iter_queued_runs(self):
+        """Scan recoverable queue candidates without loading the full Redis hash."""
+        for run_id, raw in self.redis.hscan_iter(self._run_states_key, count=100):
+            value = json.loads(raw)
+            status = value.get("status")
+            if status != "queued" and not (status in {"waiting_for_approval", "waiting_for_dependencies"}
+                                            and self.resume_requested(run_id)):
+                continue
+            persisted = self.get_run(run_id)
+            if persisted and (persisted.status == "queued" or (
+                persisted.status in {"waiting_for_approval", "waiting_for_dependencies"}
+                and self.resume_requested(run_id)
+            )):
+                yield persisted
 
     def list_active_runs(self) -> list[PersistedRun]:
         """List recoverable runs that have not reached a terminal status."""

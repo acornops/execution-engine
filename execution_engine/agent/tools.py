@@ -7,6 +7,7 @@ import httpx
 from pydantic import ValidationError
 
 from execution_engine.agent.tool_context import MAX_RESULT_CONTEXT_BYTES, compact_tool_context, json_bytes
+from execution_engine.capacity import authority_request_hook
 from execution_engine.config import settings
 from execution_engine.internal_transport import httpx_tls_kwargs
 from execution_engine.model_tool_names import ModelToolNameMap
@@ -255,6 +256,7 @@ class CoordinationToolClient(ToolClient):
                     })
                 value = await self.orchestrator.list_delegations(self.run_id)
             return {
+                "dependency_wait": tool_name == self.AWAIT and value.get("pending", 0) > 0,
                 "full_result": value,
                 "model_context": value,
                 "context_meta": {
@@ -280,7 +282,11 @@ class CoordinationToolClient(ToolClient):
                         message = detail["message"]
             except ValueError:
                 pass
-            return _error_result({"code": code, "message": message, "retryable": False})
+            result = _error_result({"code": code, "message": message, "retryable": False})
+            if (tool_name == self.DELEGATE and arguments.get("required", True)
+                    and code == "WORKSPACE_OUTSTANDING_RUN_LIMIT"):
+                result["terminal_error"] = "REQUIRED_CHILD_CAPACITY_DENIED"
+            return result
 
 
 class PlatformToolClient(ToolClient):
@@ -422,7 +428,7 @@ class GatewayToolClient(ToolClient):
             if isinstance(ref, dict) and ref.get("server_id") and ref.get("tool_name")
         }
         self.headers = {"Authorization": f"Bearer {self.token}"}
-        self._client = httpx.AsyncClient(
+        self._client = httpx.AsyncClient(event_hooks={"request": [authority_request_hook]},
             headers=self.headers,
             timeout=float(settings.TOOL_CALL_TIMEOUT_SECONDS),
             **httpx_tls_kwargs(),

@@ -74,3 +74,35 @@ Optional tuning:
   evidence. A failed outcome means the fresh image, environment descriptor, or
   ConfigMap fingerprint contradicted the requested state; missing means the run
   ended before a matching target observation.
+
+
+## Workspace capacity rollout
+
+`WORKSPACE_CAPACITY_ENABLED` defaults to `false` and must match the control plane
+and execution engine/gateway deployment. Verify `GET /health` capacity capability
+fields before activating the control-plane contract. Lifecycle authorization is
+mandatory even when workspace counters are disabled. Gateway deployments require
+`ORCH_BASE_URL` and `ORCH_SERVICE_TOKEN` using the existing control-plane service
+credential, with the existing internal TLS settings where configured.
+
+Engine `MAX_CONCURRENT_RUNS` remains an independent local worker limit. Queued work
+does not hold local/distributed execution gates; a waiting coordinator or approval
+releases both gates after checkpointing. Initial queue expiry is 600 seconds and
+CP maintenance owns authoritative expiry/cancellation settlement. Redis delivery
+records retain owner/generation identity for cleanup retries. Redis locks use
+owner-aware compare-and-delete and never replace CP execution authority.
+
+Provider validation corrections following definitive HTTP 400 rejection use fresh
+operation IDs. Hidden retries after an uncertain dispatch are rejected. Existing
+workspace provider secret lookup followed by optional platform default is unchanged.
+
+Accepted resumes during a worker's cleanup retain the task's parked outcome until
+release finishes. Resume intent is timestamped separately in Redis and is recovered
+if the process exits before scheduling the continuation. A resume reaching another
+replica waits, within its queue deadline, for the prior owner to park. Duplicate
+resume delivery does not add duplicate local queue entries.
+
+Startup loads only the available local queue slots from an incremental Redis scan.
+Finishing tasks and the periodic delivery retry loop refill those slots from durable
+queued work. Reducing worker concurrency or consolidating failed replicas therefore
+does not strand queued runs beyond the initial startup batch.

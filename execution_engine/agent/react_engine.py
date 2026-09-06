@@ -35,6 +35,7 @@ from execution_engine.agent.tool_context import (
     build_tool_continuation_state,
     compact_tool_context,
     merge_evidence,
+    tool_result_event,
     unknown_write_outcome_error,
 )
 from execution_engine.agent.tool_validation import (
@@ -303,6 +304,21 @@ class ReActAgentEngine(AgentEngine):
             )
             next_index += 1
 
+        def checkpoint(call):
+            return build_tool_continuation_state(
+                transcript=transcript, current_step=current_step,
+                total_tool_calls=total_tool_calls,
+                duplicate_tool_call_counts=duplicate_counts,
+                tool_calls=active_calls, next_tool_index=next_index,
+                tool_results=tool_results,
+                evidence_ledger=evidence_ledger, evidence_omitted=omitted,
+                pending_verifications=pending_verifications,
+                loaded_skill_refs=skill_state.loaded_refs,
+                loaded_skill_bytes=skill_state.loaded_bytes,
+                loaded_skill_instructions=skill_state.loaded_instructions,
+                pending_tool_call=call, provider_usage=provider_usage.snapshot(),
+            )
+
         while current_step < max_steps:
             if cancel_event.is_set():
                 break
@@ -436,39 +452,25 @@ class ReActAgentEngine(AgentEngine):
                             "tool": tool_name,
                             "summary": build_approval_summary(tool_name, arguments),
                             "arguments": arguments,
-                            "continuation": build_tool_continuation_state(
-                                transcript=transcript,
-                                current_step=current_step,
-                                total_tool_calls=total_tool_calls,
-                                duplicate_tool_call_counts=duplicate_counts,
-                                tool_calls=active_calls,
-                                next_tool_index=next_index,
-                                tool_results=tool_results,
-                                evidence_ledger=evidence_ledger,
-                                evidence_omitted=omitted,
-                                pending_verifications=pending_verifications,
-                                loaded_skill_refs=skill_state.loaded_refs,
-                                loaded_skill_bytes=skill_state.loaded_bytes,
-                                loaded_skill_instructions=skill_state.loaded_instructions,
-                                pending_tool_call=call,
-                                provider_usage=provider_usage.snapshot(),
-                            ),
+                            "continuation": checkpoint(call),
                         }
                         return
 
                     tool_result = await self.tool_client.call_tool(tool_name, arguments, call_id=call_id)
+                    if tool_result.get("terminal_error"):
+                        yield provider_usage.terminal({"type": "error", "code": tool_result["terminal_error"],
+                                                       "message": "Required specialist could not be admitted.",
+                                                       "retryable": False})
+                        return
+                    if tool_result.get("dependency_wait"):
+                        yield {
+                            "type": "dependency_interrupt",
+                            "continuation": checkpoint(call),
+                        }
+                        return
                     payload = tool_result["model_context"]
                     is_error = bool(tool_result["is_error"])
-                    yield {
-                        "type": "tool_result",
-                        "call_id": call_id,
-                        "tool": tool_name,
-                        "result": payload,
-                        "full_result": tool_result["full_result"],
-                        "context_meta": tool_result["context_meta"],
-                        "artifact_eligible": tool_result["artifact_eligible"],
-                        "is_error": is_error,
-                    }
+                    yield tool_result_event(call_id, tool_name, tool_result)
                     tool_results.append(transcript_tool_result(call, payload, is_error))
                     evidence_ledger, omitted = merge_evidence(
                         evidence_ledger,

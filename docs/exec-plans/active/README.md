@@ -9,3 +9,5 @@ Recommended contents for each plan:
 - decision log
 - validation log
 - completion criteria
+
+- [Workspace execution authority](workspace-execution-authority.md)

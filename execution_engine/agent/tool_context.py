@@ -272,3 +272,14 @@ def unknown_write_outcome_error() -> dict[str, Any]:
         ),
         "retryable": False,
     }
+
+
+def tool_result_event(call_id, tool_name, tool_result):
+    """Build the normalized execution event for a completed tool call."""
+    return {
+        "type": "tool_result", "call_id": call_id, "tool": tool_name,
+        "result": tool_result["model_context"], "full_result": tool_result["full_result"],
+        "context_meta": tool_result["context_meta"],
+        "artifact_eligible": tool_result["artifact_eligible"],
+        "is_error": bool(tool_result["is_error"]),
+    }

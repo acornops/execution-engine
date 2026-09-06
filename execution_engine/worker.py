@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable
 
 from execution_engine.agent.react_engine import ReActAgentEngine
+from execution_engine.capacity import dependency_resume, execute_with_capacity, run_worker_loop
 from execution_engine.config import settings
 from execution_engine.gateway_client import GatewayLlmClient
 from execution_engine.models import CommitRequest, Timing, Usage
@@ -14,7 +15,6 @@ from execution_engine.run_registry import RunRegistry, RunState, RunStatus
 from execution_engine.util.logging import bind_log_context, logger, reset_log_context
 from execution_engine.util.metrics import (
     active_runs,
-    queued_runs,
     run_duration_seconds,
     runs_cancelled_total,
     runs_completed_total,
@@ -32,7 +32,6 @@ from execution_engine.worker_run_support import (
     build_skill_names_by_ref,
     build_target_insights_context_event_payload,
     build_terminal_approval_resume,
-    commit_queued_cancellation,
     emit_skill_context_event,
     start_event_manager,
     write_result_outcome_unknown,
@@ -61,24 +60,14 @@ class Worker:
 
     async def run_loop(self) -> None:
         """Continuously dequeue and schedule accepted runs."""
-        while True:
-            run_id = await self.registry.dequeue()
-            state = self.registry.get_by_run_id(run_id)
-            if state:
-                if state.cancel_event.is_set() or state.status == RunStatus.CANCELLED:
-                    asyncio.create_task(
-                        commit_queued_cancellation(self.registry, self.orchestrator_client, state)
-                    )
-                else:
-                    state.task = asyncio.create_task(self.execute_run(state))
-            self.registry.task_done()
-            queued_runs.set(self.registry.queue_size)
-            self.registry.cleanup_terminal_runs()
+        await run_worker_loop(self)
 
     async def execute_run(self, state: RunState) -> None:
-        """Execute a run while respecting the worker concurrency limit."""
-        async with self._semaphore:
-            await self._do_execute_run(state)
+        """Acquire authoritative workspace permission before bootstrap and active work."""
+        try:
+            await execute_with_capacity(self, state)
+        finally:
+            self.registry.execution_done(state.run_id)
 
     async def _do_execute_run(self, state: RunState) -> None:
         token = bind_log_context(
@@ -233,7 +222,13 @@ class Worker:
             continuation_state = continuation.state if continuation else None
             unknown_write_outcome = False
             executed_tool_result: dict[str, Any] | None = None
-            if continuation:
+            if continuation and continuation.kind == "dependency":
+                resume_tool_result = await dependency_resume(self.orchestrator_client, state, continuation)
+                if resume_tool_result is None:
+                    state.status = RunStatus.WAITING_FOR_DEPENDENCIES
+                    suspended_for_approval = True
+                    return
+            if continuation and continuation.kind != "dependency":
                 approval = continuation.approval
                 pending_tool_call = dict(continuation.state.get("pending_tool_call") or {})
                 pending_tool_name = str(pending_tool_call.get("tool") or approval.toolName)
@@ -478,6 +473,13 @@ class Worker:
                         elif str(chunk["type"]).startswith("skill_context_"):
                             summary_events.flush(force=True)
                             emit_skill_context_event(chunk, skill_names_by_ref, emit_event)
+                        elif chunk["type"] == "dependency_interrupt":
+                            summary_events.flush(force=True)
+                            await self.orchestrator_client.save_dependency_wait(state.run_id, chunk["continuation"])
+                            state.status = RunStatus.WAITING_FOR_DEPENDENCIES
+                            self.registry.persist_state(state)
+                            suspended_for_approval = True
+                            return
                         elif chunk["type"] == "approval_interrupt":
                             summary_events.flush(force=True)
                             approval = await self.orchestrator_client.create_tool_approval(
@@ -584,6 +586,12 @@ class Worker:
                 runs_completed_total.inc()
                 emit_event("run_completed", {})
 
+        except asyncio.CancelledError:
+            state.status = RunStatus.CANCELLED if state.cancel_event.is_set() else RunStatus.FAILED
+            if event_manager:
+                event_manager.emit("run_failed", {"code": "EXECUTION_AUTHORITY_LOST",
+                                   "message": "Execution stopped before further work.", "retryable": False})
+            raise
         except Exception as e:
             logger.exception(f"Unexpected error in worker for run {state.run_id}")
             if state.cancel_event.is_set() and event_manager:

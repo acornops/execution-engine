@@ -127,3 +127,30 @@ When changing a run, event, approval, skill, or gateway boundary:
 2. Update `docs/contracts/manifest.json` and the mirrored counterpart manifest.
 3. Keep this README focused on durable boundary behavior only; do not paste endpoint, event, or field lists here.
 4. Run `task contracts:check` and the workspace platform contract check when sibling repos are available.
+
+
+## Workspace execution authority (additive version 1)
+
+Dispatch retains `contract_version: 2` and adds `capacity_contract_version: 1` and
+`capacity_enabled`. Enabled engine instances reject absent/incompatible capacity
+contracts and mode mismatches. Disabled instances accept legacy dispatches.
+`GET /health` advertises `capacity_contract_version` and `capacity_enabled`.
+
+The authenticated CP prefix is `/internal/v1/runs/:runId/capacity`:
+`acquire {ownerId}`, `renew {ownerId,generation}`, `release {ownerId,generation,state}`
+where state is `parked` or `settling`; `authorize {workspaceId}` validates persisted
+identity and lifecycle, including capacity-disabled deployments. Gateway identities
+come from verified JWT claims. Enabled upstream operations use
+`operations/begin {ownerId,generation,operationId,timeoutMs}` and idempotent
+`operations/finish {ownerId,generation,operationId}`. Each operation ID is unique.
+
+Execution callbacks and gateway requests forward `x-acornops-execution-owner` and
+`x-acornops-execution-generation`. Cleanup retains those headers after authority
+loss; the control plane decides whether expired work may settle. Builtin MCP forwards
+the same headers with the existing run JWT and does not register a duplicate operation.
+
+Coordinator waits persist the full ReAct transcript through
+`POST /internal/v1/runs/:runId/dependency-wait {generation,state}`. Existing continuation
+GET returns `{kind:"dependency",runId,generation,state}` for these waits. The worker
+releases its gates after durable save and unwinding, resumes the same run identity,
+and injects settled child results without repeating delegation writes.

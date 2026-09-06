@@ -27,6 +27,20 @@ def utc_now() -> datetime:
 class RunRequestBase(BaseModel):
     """Fields shared by mutually exclusive execution requests."""
 
+    capacity_contract_version: Literal[1] | None = None
+    capacity_enabled: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_capacity_contract(self):
+        from execution_engine.config import settings
+        if settings.WORKSPACE_CAPACITY_ENABLED and (
+            self.capacity_contract_version != 1 or self.capacity_enabled is not True
+        ):
+            raise ValueError("Compatible enabled capacity contract required")
+        if not settings.WORKSPACE_CAPACITY_ENABLED and self.capacity_enabled is True:
+            raise ValueError("Dispatch capacity mode differs from engine")
+        return self
+
     contract_version: Literal[2]
     run_id: str = Field(examples=[EXAMPLE_RUN_ID])
     workspace_id: str = Field(examples=[EXAMPLE_WORKSPACE_ID])
@@ -548,7 +562,9 @@ class RunContinuation(BaseModel):
     """Persisted ReAct loop state used to resume after a write approval."""
 
     runId: str
-    approvalId: str
+    kind: Literal["approval", "dependency"] = "approval"
+    generation: int | None = None
+    approvalId: str | None = None
     schemaVersion: int = 1
     state: Dict[str, Any]
-    approval: ToolApproval
+    approval: ToolApproval | None = None
