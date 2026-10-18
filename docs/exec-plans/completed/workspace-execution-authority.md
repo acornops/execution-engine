@@ -1,5 +1,8 @@
 # Workspace execution authority
 
+> Archive review — 2026-10-18: Implementation has landed on main. This plan is retained as delivery history, not active implementation work.
+> Original scope, checklists, and validation below are historical; this is not a new runtime or rollout validation report.
+
 Scope: additive capacity contract version 1 with independently enabled workspace pools. The control plane classifies and admits runs; this service must enforce its run owner/generation and lifecycle decisions without deriving limits locally.
 
 Implementation sequence:
@@ -9,7 +12,7 @@ Implementation sequence:
 3. Persist dependency continuations and cleanup identities; preserve idempotent delivery.
 4. Run repository validation and record integration limits in the workspace task report.
 
-Status: implementation and scoped review complete. Retain this plan until the coordinated change lands.
+Status: implementation and scoped review complete; coordinated implementation has landed on main.
 
 ## Validation
 

@@ -41,4 +41,4 @@ This `docs/` tree is the repository-local system of record for agent-readable de
 - [References](/docs/references/index.md)
 - [Generated Artifacts](/docs/generated/README.md)
 
-- [Workspace execution authority plan](exec-plans/active/workspace-execution-authority.md)
+- [Workspace execution authority plan](exec-plans/completed/workspace-execution-authority.md)

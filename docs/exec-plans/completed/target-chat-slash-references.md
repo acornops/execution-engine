@@ -1,5 +1,8 @@
 # Target chat slash references
 
+> Archive review — 2026-10-18: Implementation landed (control-plane bc14ca2, execution-engine aad43f3, management-console 36751f5). The original validation checklist below is historical, not a claim that those commands were rerun during this cleanup.
+> Original scope, checklists, and validation below are historical; this is not a new runtime or rollout validation report.
+
 ## Goal
 
 Honor control-plane-validated target-chat references deterministically while
