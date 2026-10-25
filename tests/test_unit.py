@@ -1773,6 +1773,7 @@ async def test_worker_keeps_internal_tool_identity_and_adds_readable_model_name(
     snapshot = ExecutionSnapshot.model_validate(snapshot_payload)
 
     client = MagicMock(spec=OrchestratorClient)
+    client.capacity = AsyncMock(return_value={"status": "disabled", "contractVersion": 1})
     client.get_run_event_cursor = AsyncMock(return_value=0)
     client.bootstrap = AsyncMock(return_value=snapshot)
     client.get_run_continuation = AsyncMock(return_value=None)
@@ -1795,7 +1796,7 @@ async def test_worker_keeps_internal_tool_identity_and_adds_readable_model_name(
     monkeypatch.setattr(worker_module, "ReActAgentEngine", CapturingToolSpecAgentEngine)
 
     worker = worker_module.Worker(registry, client)
-    await worker._do_execute_run(state)
+    await worker.execute_run(state)
 
     assert state.status == RunStatus.COMPLETED
     assert CapturingToolSpecAgentEngine.tool_specs == [

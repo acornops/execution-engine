@@ -24,6 +24,12 @@ GATEWAY_URL = os.getenv("GATEWAY_URL", "http://localhost:8001")
 received_events = {}
 received_commits = {}
 
+@app.post("/internal/v1/runs/{run_id}/capacity/acquire")
+async def capacity_acquire(run_id: str):
+    """Mirror the existing disabled-capacity control-plane dispatch gate."""
+    status = "disabled" if os.getenv("WORKSPACE_DISPATCH_ENABLED", "true") == "true" else "wait"
+    return {"status": status, "contractVersion": 1}
+
 @app.post("/internal/v1/runs/{run_id}/bootstrap")
 async def bootstrap(run_id: str):
     return {

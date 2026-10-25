@@ -85,6 +85,15 @@ mandatory even when workspace counters are disabled. Gateway deployments require
 `ORCH_BASE_URL` and `ORCH_SERVICE_TOKEN` using the existing control-plane service
 credential, with the existing internal TLS settings where configured.
 
+Every queued attempt, including work recovered from Redis, checks the
+control-plane acquire endpoint before starting. Closing control-plane
+`WORKSPACE_DISPATCH_ENABLED` keeps that work queued even when capacity limits are
+disabled; already executing work may drain. Disabled mode requires a compatible
+`disabled` acquire response and uses only the local worker semaphore, without
+ownership leases, renewal, or release. An incompatible acquire response starts no
+work. Apply the usual bounded queue-expiry and cancellation checks before reopening
+dispatch after a maintenance window.
+
 Engine `MAX_CONCURRENT_RUNS` remains an independent local worker limit. Queued work
 does not hold local/distributed execution gates; a waiting coordinator or approval
 releases both gates after checkpointing. Initial queue expiry is 600 seconds and

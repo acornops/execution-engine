@@ -11,8 +11,9 @@ from execution_engine.worker import Worker
 
 
 @pytest.mark.asyncio
-async def test_wait_does_not_execute_or_hold_local_slot(monkeypatch):
-    monkeypatch.setitem(settings.__dict__, "WORKSPACE_CAPACITY_ENABLED", True)
+@pytest.mark.parametrize("capacity_enabled", [False, True])
+async def test_wait_does_not_execute_or_hold_local_slot(monkeypatch, capacity_enabled):
+    monkeypatch.setitem(settings.__dict__, "WORKSPACE_CAPACITY_ENABLED", capacity_enabled)
     registry = RunRegistry(1)
     state, _ = await registry.get_or_create("w", "t", "kubernetes", "s", "r", "m")
     orch = AsyncMock()
@@ -23,6 +24,126 @@ async def test_wait_does_not_execute_or_hold_local_slot(monkeypatch):
     worker._do_execute_run.assert_not_called()
     assert worker._semaphore._value == 1
     assert registry.queue_size == 1
+
+
+@pytest.mark.asyncio
+async def test_disabled_capacity_acquires_before_local_slot_without_lease_calls(monkeypatch):
+    import json
+
+    import httpx
+
+    from execution_engine.capacity import current_authority
+    from execution_engine.orchestrator_client import OrchestratorClient
+
+    monkeypatch.setattr(settings, "WORKSPACE_CAPACITY_ENABLED", False)
+    registry = RunRegistry(1)
+    state, _ = await registry.get_or_create("w", "t", "kubernetes", "s", "r", "m")
+    started = []
+    requests = []
+
+    async def acquire(request):
+        assert request.url.path == "/internal/v1/runs/r/capacity/acquire"
+        assert json.loads(request.content) == {"ownerId": state.capacity_owner_id}
+        assert worker._semaphore._value == 1
+        requests.append(request)
+        return httpx.Response(200, json={"status": "disabled", "contractVersion": 1})
+
+    client = OrchestratorClient()
+    await client.client.aclose()
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(acquire))
+    worker = Worker(registry, client)
+
+    async def execute(run):
+        assert current_authority.get() is None
+        assert worker._semaphore._value == 0
+        started.append(run.run_id)
+
+    worker._do_execute_run = execute
+    try:
+        await worker.execute_run(state)
+    finally:
+        await client.close()
+    assert len(requests) == 1
+    assert started == ["r"]
+    assert worker._semaphore._value == 1
+
+
+@pytest.mark.asyncio
+async def test_disabled_capacity_recovered_queue_waits_for_dispatch_reopening(monkeypatch):
+    import httpx
+
+    from execution_engine.orchestrator_client import OrchestratorClient
+    from tests import harness_orchestrator
+    from tests.test_unit import durability_store
+
+    monkeypatch.setattr(settings, "WORKSPACE_CAPACITY_ENABLED", False)
+    monkeypatch.setenv("WORKSPACE_DISPATCH_ENABLED", "false")
+    store = durability_store()
+    previous = RunRegistry(1, store)
+    await previous.get_or_create("w", "t", "kubernetes", "s", "r", "m")
+    store.release_run_lock("r", previous._owner_id)
+    restarted = RunRegistry(1, store)
+    client = OrchestratorClient()
+    await client.client.aclose()
+    client.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=harness_orchestrator.app))
+    client.base_url = "http://orchestrator"
+    started = []
+    worker = Worker(restarted, client)
+
+    async def execute(run):
+        started.append(run.run_id)
+
+    worker._do_execute_run = execute
+    try:
+        await restarted.recover_stale_active_runs(client)
+        assert restarted.queue_size == 1
+        run_id = await restarted.dequeue()
+        restarted.task_done()
+        await worker.execute_run(restarted.get_by_run_id(run_id))
+        assert started == []
+        assert restarted.queue_size == 1
+        assert store.get_run("r").status == "queued"
+        assert worker._semaphore._value == 1
+        monkeypatch.setenv("WORKSPACE_DISPATCH_ENABLED", "true")
+        run_id = await restarted.dequeue()
+        restarted.task_done()
+        await worker.execute_run(restarted.get_by_run_id(run_id))
+        assert started == ["r"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capacity_enabled, response", [
+    (False, {"status": "granted", "generation": 1, "contractVersion": 1}),
+    (True, {"status": "disabled", "contractVersion": 1}),
+    (False, {"status": "disabled"}),
+    (False, {"status": "disabled", "contractVersion": True}),
+    (False, {"status": "disabled", "contractVersion": 2}),
+    (False, None),
+    (False, {"status": "unknown", "contractVersion": 1}),
+    (True, {"status": "granted", "generation": True, "contractVersion": 1}),
+    (True, {"status": "granted", "generation": 0, "contractVersion": 1}),
+])
+async def test_acquisition_contract_mismatch_starts_no_work(monkeypatch, capacity_enabled, response):
+    from execution_engine.run_registry import RunStatus
+
+    monkeypatch.setattr(settings, "WORKSPACE_CAPACITY_ENABLED", capacity_enabled)
+    registry = RunRegistry(1)
+    state, _ = await registry.get_or_create("w", "t", "kubernetes", "s", "r", "m")
+    orch = AsyncMock()
+    orch.capacity.return_value = response
+    started = []
+    worker = Worker(registry, orch)
+
+    async def execute(run):
+        started.append(run.run_id)
+
+    worker._do_execute_run = execute
+    await worker.execute_run(state)
+    assert started == []
+    assert state.status == RunStatus.FAILED
+    assert worker._semaphore._value == 1
 
 
 @pytest.mark.asyncio
@@ -326,12 +447,13 @@ async def test_suspension_releases_distributed_and_local_gates(monkeypatch, park
 
 
 @pytest.mark.asyncio
-async def test_capacity_queue_expiry_starts_no_work(monkeypatch):
+@pytest.mark.parametrize("capacity_enabled", [False, True])
+async def test_capacity_queue_expiry_starts_no_work(monkeypatch, capacity_enabled):
     from datetime import timedelta
 
     from execution_engine.run_registry import RunStatus
 
-    monkeypatch.setattr(settings, "WORKSPACE_CAPACITY_ENABLED", True)
+    monkeypatch.setattr(settings, "WORKSPACE_CAPACITY_ENABLED", capacity_enabled)
     registry = RunRegistry(1)
     state, _ = await registry.get_or_create("w", "t", "kubernetes", "s", "r", "m")
     state.created_at -= timedelta(seconds=601)

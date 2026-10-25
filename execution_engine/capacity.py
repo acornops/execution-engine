@@ -55,15 +55,13 @@ async def execute_with_capacity(worker, state):
     """A waiting grant returns to the bounded queue without holding a local slot."""
     from execution_engine.run_registry import RunStatus
 
-    if not settings.WORKSPACE_CAPACITY_ENABLED:
-        async with worker._semaphore:
-            await worker._do_execute_run(state)
-        return
+    capacity_enabled = settings.WORKSPACE_CAPACITY_ENABLED
     owner = state.capacity_owner_id
     queued_since = state.resume_requested_at or state.created_at
     try:
         grant = await worker.orchestrator_client.capacity(state.run_id, "acquire", {"ownerId": owner})
-        if grant.get("contractVersion") != 1:
+        if (not isinstance(grant, dict) or type(grant.get("contractVersion")) is not int
+                or grant["contractVersion"] != 1):
             raise RuntimeError("Incompatible capacity authority")
         if grant.get("status") == "wait":
             if (datetime.now(UTC) - queued_since).total_seconds() > 600:
@@ -84,7 +82,11 @@ async def execute_with_capacity(worker, state):
             # Reload durable truth if a future checkpoint resume lands on this replica.
             worker.registry.forget_local_run(state.run_id)
             return
-        if grant.get("status") != "granted" or not isinstance(grant.get("generation"), int):
+        if not capacity_enabled:
+            if grant.get("status") != "disabled":
+                raise RuntimeError("Dispatch capacity mode differs from engine")
+        elif (grant.get("status") != "granted" or type(grant.get("generation")) is not int
+                or grant["generation"] < 1):
             raise RuntimeError("Execution capacity denied")
     except httpx.HTTPError as error:
         transient = not isinstance(error, httpx.HTTPStatusError) or error.response.status_code >= 500
@@ -101,6 +103,10 @@ async def execute_with_capacity(worker, state):
         state.status = RunStatus.FAILED
         state.ended_at = datetime.now(UTC)
         worker.registry.persist_state(state)
+        return
+    if not capacity_enabled:
+        async with worker._semaphore:
+            await worker._do_execute_run(state)
         return
     authority = Authority(state.run_id, owner, grant["generation"])
     worker.registry.save_authority(authority)
