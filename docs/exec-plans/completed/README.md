@@ -1,5 +1,7 @@
 # Completed Execution Plans
 
+- [Disabled-capacity dispatch gate](disabled-capacity-dispatch-gate.md) — Dispatch and dependency corrections released for demo.
+
 Move finished plans here after the work lands.
 
 Keep only completed plans that remain useful as durable design or validation context.

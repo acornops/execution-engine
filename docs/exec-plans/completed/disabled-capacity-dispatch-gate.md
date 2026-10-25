@@ -1,9 +1,13 @@
 # Disabled-capacity dispatch gate
 
-Status: capacity implementation, local validation, and independent review complete;
-runtime dependency correction, local validation, and parent review complete.
-The follow-up request on 2026-10-26 authorizes final review, publication, and an
-in-place demo upgrade. Production acceptance remains separate.
+Status: completed and released for demo on 2026-10-26 as
+`0.0.1-experimental.16`, source `38b94ad1e72e8ddc1e807f87ced389deac9eb9e4`.
+[PR #8](https://github.com/acornops/execution-engine/pull/8), PR/main CI, and
+[release](https://github.com/acornops/execution-engine/actions/runs/40220630354)
+passed. Hosted multi-container integration, runtime audit and actionable image
+gate passed; published-image provenance matches the source. Independent Trivy
+scanning found no fixed-version High/Critical findings; unfixed OS findings and
+production-specific recovery acceptance remain separate gates.
 
 ## Goal and scope
 
