@@ -37,6 +37,22 @@ INTERNAL_CONTROL_PLANE_PREFIX = "/internal/v1"
 PLATFORM_NATIVE_TOOL_READ_TIMEOUT_SECONDS = 20.0
 
 
+class ToolApprovalRequestError(RuntimeError):
+    """Safe public approval failure; the chained cause retains transport diagnostics."""
+
+    def __init__(self, code: str | None = None):
+        """Allow only known public codes and never expose an upstream error message."""
+        self.code = "RUN_NOT_ACTIVE" if code == "RUN_NOT_ACTIVE" else "TOOL_APPROVAL_REQUEST_FAILED"
+        message = (
+            "The run is no longer active, so the next approval could not be requested. "
+            "Review the run details before starting a new run."
+            if self.code == "RUN_NOT_ACTIVE" else
+            "AcornOps could not confirm the approval request. "
+            "Review Approvals and the run details before trying again."
+        )
+        super().__init__(message)
+
+
 def _retryable_orchestrator_error(exc: BaseException) -> bool:
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
         return True
@@ -181,13 +197,25 @@ class OrchestratorClient:
         body = payload.model_dump(exclude_none=True)
         if continuation is not None:
             body["continuation"] = continuation
-        response = await self.client.post(
-            url,
-            json=body,
-            headers={"Content-Type": "application/json"},
-        )
-        response.raise_for_status()
-        return ToolApproval.model_validate(response.json())
+        try:
+            # Do not retry: a timeout or malformed response may follow a persisted approval.
+            response = await self.client.post(
+                url,
+                json=body,
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            return ToolApproval.model_validate(response.json())
+        except httpx.HTTPStatusError as exc:
+            try:
+                error_body = exc.response.json()
+            except ValueError:
+                error_body = None
+            error = error_body.get("error") if isinstance(error_body, dict) else None
+            code = error.get("code") if isinstance(error, dict) else None
+            raise ToolApprovalRequestError(code if isinstance(code, str) else None) from exc
+        except (httpx.RequestError, ValueError) as exc:
+            raise ToolApprovalRequestError() from exc
 
     async def save_dependency_wait(self, run_id: str, state: dict) -> None:
         from execution_engine.capacity import current_authority

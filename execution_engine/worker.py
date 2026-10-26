@@ -9,7 +9,7 @@ from execution_engine.capacity import dependency_resume, execute_with_capacity, 
 from execution_engine.config import settings
 from execution_engine.gateway_client import GatewayLlmClient
 from execution_engine.models import CommitRequest, Timing, Usage
-from execution_engine.orchestrator_client import EventManager, OrchestratorClient
+from execution_engine.orchestrator_client import EventManager, OrchestratorClient, ToolApprovalRequestError
 from execution_engine.reasoning_summary_events import ReasoningSummaryEventForwarder
 from execution_engine.run_registry import RunRegistry, RunState, RunStatus
 from execution_engine.util.logging import bind_log_context, logger, reset_log_context
@@ -189,14 +189,15 @@ class Worker:
                     emit_event("target_insights_context_retrieved", target_insights_event_payload)
                 emit_progress("context_ready", f"Context ready with {len(context.messages)} messages.")
 
-                run_started_payload = {
-                    "workspace_id": state.workspace_id,
-                    "session_id": state.session_id
-                }
-                if state.scope_type == "target":
-                    run_started_payload["target_id"] = state.target_id
-                    run_started_payload["target_type"] = state.target_type
-                emit_event("run_started", run_started_payload)
+            # Each dispatch, including a durable resume, must restore the active run state.
+            run_started_payload = {
+                "workspace_id": state.workspace_id,
+                "session_id": state.session_id
+            }
+            if state.scope_type == "target":
+                run_started_payload["target_id"] = state.target_id
+                run_started_payload["target_type"] = state.target_type
+            emit_event("run_started", run_started_payload)
 
             llm_client = GatewayLlmClient(
                 url=snapshot.llm.gateway.url,
@@ -603,7 +604,8 @@ class Worker:
                     runs_cancelled_total.inc()
             else:
                 if event_manager:
-                    event_manager.emit("run_failed", {"code": "INTERNAL_ERROR", "message": str(e), "retryable": False})
+                    code = e.code if isinstance(e, ToolApprovalRequestError) else "INTERNAL_ERROR"
+                    event_manager.emit("run_failed", {"code": code, "message": str(e), "retryable": False})
                 state.status = RunStatus.FAILED
                 runs_failed_total.inc()
         finally:

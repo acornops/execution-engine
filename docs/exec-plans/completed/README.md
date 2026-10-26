@@ -1,5 +1,7 @@
 # Completed Execution Plans
 
+- [Approval-resume reliability](approval-resume-reliability.md) — Resume events and safe approval errors; coordinated release acceptance tracked in deployment.
+
 - [Disabled-capacity dispatch gate](disabled-capacity-dispatch-gate.md) — Dispatch and dependency corrections released for demo.
 
 Move finished plans here after the work lands.

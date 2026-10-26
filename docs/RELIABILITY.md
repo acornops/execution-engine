@@ -44,6 +44,15 @@
 - Startup recovery marks persisted queued/running/cancelling runs failed with `EXECUTION_ENGINE_RESTARTED`; runs already persisted as `waiting_for_approval` are owned by the control-plane continuation and are not stale active execution.
 - Write approval resume always bootstraps fresh credentials and revalidates the pending tool against the current allowed tool catalog before execution.
 - Write approval resume seeds event sequencing from the control-plane replay cursor and preserves any higher Redis outbox cursor before emitting resumed approval or tool-result events.
+- Every validated dispatch, including approval resume, emits `run_started` before
+  resumed tool execution or another approval request. It does not restart the
+  assistant message. Control Plane preserves the original start timestamp and
+  accepts approvals during `dispatching` because event delivery is asynchronous.
+  Late start events must not overwrite approval waits, cancellation or terminal states.
+- Approval request failures expose only safe, actionable messages: `RUN_NOT_ACTIVE`
+  for an inactive run, otherwise `TOOL_APPROVAL_REQUEST_FAILED`. Original exceptions
+  remain chained in server logs. Requests are not automatically retried: a timeout
+  may follow a saved approval, and earlier actions in the run may have completed.
 - Approved write results are persisted immediately after the tool call. If the engine restarts after execution starts but before the result is recorded, the next resume fails closed with `WRITE_TOOL_OUTCOME_UNKNOWN`; operators must inspect the cluster and retry manually if appropriate.
 - Terminal run registry entries are removed after `TERMINAL_RUN_TTL_SECONDS`.
 - In production, Redis is required. It backs the run-id identity reservation, event outbox, and terminal commit retry queue.
