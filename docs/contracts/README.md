@@ -44,6 +44,15 @@ The execution engine owns run execution and talks only to the control plane and 
 - Execution-engine never calls target agents, management-console, or external MCP servers directly.
 - Cancellation is terminal from the engine's point of view; after cancellation wins, user-visible assistant output stops.
 - Approval continuations must not store gateway tokens or credentials. Resume reboots policy through control-plane bootstrap.
+- Every validated dispatch, including continuation resume, emits `run_started`.
+  Approval requests accept `dispatching`, `running`, or `waiting_for_approval`
+  because event delivery may lag; queued, cancelling and terminal runs remain
+  ineligible. This does not relax execution authority, exact tool grants or approval.
+  Control Plane must preserve approval waits, cancellation and terminal states
+  when start events arrive late, without resetting the first start timestamp.
+- Approval HTTP failures are not retried automatically. Public `run_failed`
+  messages use `RUN_NOT_ACTIVE` or `TOOL_APPROVAL_REQUEST_FAILED`, never raw
+  upstream bodies or internal URLs; diagnostic causes remain in server logs.
 - Event sequencing must resume from the control-plane cursor plus any higher local durable outbox cursor.
 - Tool responses separate `full_result` from `model_context`. Only bounded
   structured context enters reasoning; eligible complete results are uploaded

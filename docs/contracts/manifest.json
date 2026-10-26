@@ -25,6 +25,9 @@
       "eventFrameFields": ["schema_version", "run_id", "seq", "ts", "type", "payload"],
       "approvalRequestFields": ["toolCallId", "toolName", "toolRef.{serverId,toolName}", "summary?", "arguments", "continuation?"],
       "approvalExecutionStartedResponseFields": ["approval", "approvalReceipt"],
+      "approvalRequestActiveStatuses": ["dispatching", "running", "waiting_for_approval"],
+      "approvalResumeSemantics": "Every validated dispatch emits run_started; event delivery may lag approval creation. Late start events must not overwrite approval waits, cancellation or terminal state. Preserve original start time, execution authority, exact write grants and at-most-once approved execution.",
+      "approvalRequestFailureCodes": ["RUN_NOT_ACTIVE", "TOOL_APPROVAL_REQUEST_FAILED"],
       "approvalResponseScopeFields": ["targetId? (target scope only; forbidden for Agent chat and Workflow runs)", "targetType? (target scope only; forbidden for Agent chat and Workflow runs)", "workflowId?", "executionId?", "workflowSessionId?"],
       "eventTypes": [
         "run_progress",

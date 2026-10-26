@@ -54,7 +54,7 @@ from execution_engine.models import (
     ToolConfig,
     Usage,
 )
-from execution_engine.orchestrator_client import EventManager, OrchestratorClient
+from execution_engine.orchestrator_client import EventManager, OrchestratorClient, ToolApprovalRequestError
 from execution_engine.readiness import DependencyStatus
 from execution_engine.run_registry import RunRegistry, RunStatus
 from execution_engine.worker_run_support import (
@@ -706,6 +706,111 @@ async def test_orchestrator_client_encodes_skill_snapshot_path_params():
         assert snapshot.files[0].path == "SKILL.md"
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "body", "expected_code"), [
+    (409, '{"error":{"code":"RUN_NOT_ACTIVE","message":"internal-secret"}}', "RUN_NOT_ACTIVE"),
+    (409, '{"error":{"code":"UNRECOGNIZED","message":"internal-secret"}}', "TOOL_APPROVAL_REQUEST_FAILED"),
+    (503, '<html>internal-secret</html>', "TOOL_APPROVAL_REQUEST_FAILED"),
+    (400, '{"error":null}', "TOOL_APPROVAL_REQUEST_FAILED"),
+    (400, '["internal-secret"]', "TOOL_APPROVAL_REQUEST_FAILED"),
+    (400, '{"error":{"code":["RUN_NOT_ACTIVE"]}}', "TOOL_APPROVAL_REQUEST_FAILED"),
+    (201, '{"internal":"internal-secret"}', "TOOL_APPROVAL_REQUEST_FAILED"),
+    (201, 'not-json', "TOOL_APPROVAL_REQUEST_FAILED"),
+    (None, '', "TOOL_APPROVAL_REQUEST_FAILED"),
+])
+async def test_approval_request_errors_are_safe_and_never_retried(status, body, expected_code):
+    attempts = []
+
+    async def handler(request):
+        attempts.append(request)
+        if status is None:
+            raise httpx.ReadTimeout("internal-secret", request=request)
+        return httpx.Response(status, content=body)
+
+    client = OrchestratorClient()
+    await client.close()
+    client.base_url = "https://private-control-plane.internal"
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ToolApprovalRequestError) as caught:
+            await client.create_tool_approval(
+                "run-1", tool_call_id="call-2", tool_name="restart_service",
+                tool_ref={"serverId": EXAMPLE_SERVER_ID, "toolName": "restart_service"},
+                arguments={"unit": "cron.service"},
+            )
+        error = caught.value
+        assert error.code == expected_code
+        assert "internal-secret" not in str(error)
+        assert "private-control-plane" not in str(error)
+        assert "approval" in str(error).lower()
+        assert "review" in str(error).lower()
+        assert error.__cause__ is not None
+        assert len(attempts) == 1
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_during_request", [False, True])
+async def test_worker_reports_safe_approval_failure_and_preserves_cancellation(monkeypatch, cancel_during_request):
+    registry = RunRegistry(max_concurrent_runs=1, durability_store=durability_store())
+    state, _ = await registry.get_or_create(
+        EXAMPLE_WORKSPACE_ID, EXAMPLE_TARGET_ID, "kubernetes", EXAMPLE_SESSION_ID,
+        "91db95f3-e9c3-4a12-921b-b46b5d1f17d4", EXAMPLE_MESSAGE_ID,
+    )
+    client = MagicMock(spec=OrchestratorClient)
+    client.get_run_event_cursor = AsyncMock(return_value=0)
+    client.bootstrap = AsyncMock(return_value=execution_snapshot(state.run_id, allowed_tools=["restart_service"]))
+    client.get_run_continuation = AsyncMock(return_value=None)
+    client.get_context = AsyncMock(
+        return_value=ContextPackage(messages=[Message(role="user", content="Restart cron.")])
+    )
+    client.post_events = AsyncMock()
+    client.commit = AsyncMock()
+    approval_client = OrchestratorClient()
+    await approval_client.close()
+    attempts = []
+
+    async def handler(request):
+        attempts.append(request)
+        if cancel_during_request:
+            state.cancel_event.set()
+        return httpx.Response(409, json={"error": {"code": "RUN_NOT_ACTIVE", "message": "internal-secret"}})
+
+    approval_client.base_url = "https://private-control-plane.internal"
+    approval_client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client.create_tool_approval = approval_client.create_tool_approval
+    gateway_tools = MagicMock()
+    gateway_tools.close = AsyncMock()
+    monkeypatch.setattr(worker_module, "GatewayLlmClient", MagicMock())
+    monkeypatch.setattr(worker_tool_authority_module, "GatewayToolClient", lambda **kwargs: gateway_tools)
+    FakeReActAgentEngine.chunks = [{
+        "type": "approval_interrupt", "call_id": "call-2", "tool": "restart_service",
+        "arguments": {"unit": "cron.service"}, "continuation": {"pending_tool_call": {"call_id": "call-2"}},
+    }]
+    monkeypatch.setattr(worker_module, "ReActAgentEngine", FakeReActAgentEngine)
+    try:
+        await worker_module.Worker(registry, client)._do_execute_run(state)
+    finally:
+        await approval_client.close()
+    events = posted_events(client)
+    public_events = json.dumps([event.model_dump(mode="json") for event in events])
+    assert "private-control-plane" not in public_events
+    assert "internal-secret" not in public_events
+    assert len(attempts) == 1
+    gateway_tools.call_tool.assert_not_called()
+    if cancel_during_request:
+        assert state.status == RunStatus.CANCELLED
+        assert posted_event_types(client).count("run_cancelled") == 1
+        assert "run_failed" not in posted_event_types(client)
+    else:
+        assert state.status == RunStatus.FAILED
+        failure = next(event for event in events if event.type == "run_failed")
+        assert failure.payload["code"] == "RUN_NOT_ACTIVE"
+        assert failure.payload["retryable"] is False
+        assert "review" in failure.payload["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -3494,13 +3599,18 @@ async def test_worker_generates_tool_only_fallback_and_tracks_tool_calls(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypatch):
+@pytest.mark.parametrize("target_type", ["kubernetes", "virtual_machine"])
+@pytest.mark.parametrize("request_another_approval", [False, True])
+@pytest.mark.parametrize("write_failed", [False, True])
+async def test_worker_resume_events_continue_after_control_plane_cursor(
+    monkeypatch, target_type, request_another_approval, write_failed,
+):
     store = durability_store()
     registry = RunRegistry(max_concurrent_runs=1, durability_store=store)
     state, _ = await registry.get_or_create(
         EXAMPLE_WORKSPACE_ID,
         EXAMPLE_TARGET_ID,
-        "kubernetes",
+        target_type,
         EXAMPLE_SESSION_ID,
         "91db95f3-e9c3-4a12-921b-b46b5d1f17d3",
         EXAMPLE_MESSAGE_ID,
@@ -3509,12 +3619,18 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
     registry.persist_state(state)
 
     snapshot = execution_snapshot(state.run_id, allowed_tools=["restart_workload"])
+    snapshot.scope = Scope.model_validate({**snapshot.scope.model_dump(), "target_type": target_type})
+    tool_result = (
+        {"code": "PRECONDITION_FAILED", "outcome": "not_started"}
+        if write_failed else {"success": True}
+    )
+    dispatched_calls = []
     approval = ToolApproval(
         id="approval-1",
         runId=state.run_id,
         workspaceId=EXAMPLE_WORKSPACE_ID,
         targetId=EXAMPLE_TARGET_ID,
-        targetType="kubernetes",
+        targetType=target_type,
         toolCallId="call-1",
         toolName="restart_workload",
         summary="Restart Deployment acornops-demo/web.",
@@ -3541,9 +3657,9 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
 
     succeeded_approval = approval.model_copy(
         update={
-            "executionStatus": "succeeded",
-            "toolResult": {"success": True},
-            "toolResultIsError": False,
+            "executionStatus": "failed" if write_failed else "succeeded",
+            "toolResult": tool_result,
+            "toolResultIsError": write_failed,
         }
     )
     client = MagicMock(spec=OrchestratorClient)
@@ -3560,6 +3676,9 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
     client.post_events = AsyncMock()
     client.commit = AsyncMock()
     client.consume_run_continuation = AsyncMock()
+    client.create_tool_approval = AsyncMock(return_value=approval.model_copy(update={
+        "id": "approval-2", "toolCallId": "call-2", "status": "pending",
+    }))
 
     class CapturingToolClient:
         async def call_tool(
@@ -3573,9 +3692,10 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
             assert call_id == "call-1"
             assert approval_receipt == "signed-receipt"
             assert arguments["namespace"] == "acornops-demo"
+            dispatched_calls.append(call_id)
             return {
-                "full_result": {"success": True, "completeDetails": "artifact-only"},
-                "model_context": {"success": True},
+                "full_result": {**tool_result, "completeDetails": "artifact-only"},
+                "model_context": tool_result,
                 "context_meta": {
                     "schema_version": "v1",
                     "strategy": "test",
@@ -3585,7 +3705,7 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
                     "omissions": [],
                 },
                 "artifact_eligible": False,
-                "is_error": False,
+                "is_error": write_failed,
             }
 
         async def close(self) -> None:
@@ -3597,7 +3717,8 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
 
         async def run(self, *_args, resume_tool_result=None, **_kwargs):
             assert resume_tool_result is not None
-            assert resume_tool_result["result"] == {"success": True}
+            assert resume_tool_result["result"] == tool_result
+            assert resume_tool_result["is_error"] is write_failed
             yield {
                 "type": "tool_result",
                 "call_id": resume_tool_result["call_id"],
@@ -3605,7 +3726,14 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
                 "result": resume_tool_result["result"],
                 "is_error": resume_tool_result["is_error"],
             }
-            yield {"type": "delta", "text": "Restart completed."}
+            if request_another_approval:
+                yield {
+                    "type": "approval_interrupt", "call_id": "call-2", "tool": "restart_workload",
+                    "arguments": {"namespace": "acornops-demo", "name": "other", "kind": "Deployment"},
+                    "continuation": {"pending_tool_call": {"call_id": "call-2", "tool": "restart_workload"}},
+                }
+                return
+            yield {"type": "delta", "text": "Restart result checked."}
             yield {"type": "final", "usage": {"input_tokens": 10, "output_tokens": 3, "tool_calls": 1}}
 
     monkeypatch.setattr(worker_module, "GatewayLlmClient", MagicMock())
@@ -3620,6 +3748,11 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
     await worker._do_execute_run(state)
 
     events = posted_events(client)
+    started = [event for event in events if event.type == "run_started"]
+    assert len(started) == 1
+    assert started[0].payload["target_type"] == target_type
+    assert started[0].seq < next(event.seq for event in events if event.type == "tool_call_started")
+    assert "assistant_message_started" not in posted_event_types(client)
     resume_events = [
         event
         for event in events
@@ -3642,14 +3775,25 @@ async def test_worker_resume_events_continue_after_control_plane_cursor(monkeypa
     assert any(
         event.type == "tool_call_completed" and event.payload["tool"] == "restart_workload" for event in resume_events
     )
-    assert state.status == RunStatus.COMPLETED
+    assert dispatched_calls == ["call-1"]
+    client.mark_tool_approval_execution_started.assert_awaited_once_with(state.run_id, approval.id)
     client.mark_tool_approval_execution_finished.assert_awaited_once_with(
         state.run_id,
         approval.id,
-        {"success": True},
-        False,
+        tool_result,
+        write_failed,
     )
-    client.consume_run_continuation.assert_awaited_once_with(state.run_id)
+    if request_another_approval:
+        assert state.status == RunStatus.WAITING_FOR_APPROVAL
+        client.create_tool_approval.assert_awaited_once()
+        assert client.create_tool_approval.await_args.kwargs["tool_call_id"] == "call-2"
+        assert posted_event_types(client)[-1] == "tool_approval_requested"
+        client.commit.assert_not_awaited()
+        client.consume_run_continuation.assert_not_awaited()
+    else:
+        assert state.status == RunStatus.COMPLETED
+        client.create_tool_approval.assert_not_awaited()
+        client.consume_run_continuation.assert_awaited_once_with(state.run_id)
 
 
 def test_write_result_outcome_unknown_requires_error_and_explicit_outcome():
