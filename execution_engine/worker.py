@@ -8,19 +8,19 @@ from execution_engine.agent.react_engine import ReActAgentEngine
 from execution_engine.capacity import dependency_resume, execute_with_capacity, run_worker_loop
 from execution_engine.config import settings
 from execution_engine.gateway_client import GatewayLlmClient
-from execution_engine.models import CommitRequest, Timing, Usage
+from execution_engine.models import Usage
 from execution_engine.orchestrator_client import EventManager, OrchestratorClient, ToolApprovalRequestError
 from execution_engine.reasoning_summary_events import ReasoningSummaryEventForwarder
 from execution_engine.run_registry import RunRegistry, RunState, RunStatus
-from execution_engine.util.logging import bind_log_context, logger, reset_log_context
+from execution_engine.util.logging import bind_log_context, logger
 from execution_engine.util.metrics import (
     active_runs,
-    run_duration_seconds,
     runs_cancelled_total,
     runs_completed_total,
     runs_failed_total,
     runs_started_total,
 )
+from execution_engine.worker_cleanup import finalize_run
 from execution_engine.worker_fallbacks import build_tool_only_fallback
 from execution_engine.worker_run_support import (
     approval_event_payload,
@@ -588,10 +588,11 @@ class Worker:
                 emit_event("run_completed", {})
 
         except asyncio.CancelledError:
-            state.status = RunStatus.CANCELLED if state.cancel_event.is_set() else RunStatus.FAILED
-            if event_manager:
-                event_manager.emit("run_failed", {"code": "EXECUTION_AUTHORITY_LOST",
-                                   "message": "Execution stopped before further work.", "retryable": False})
+            if not state.execution_lock_lost:
+                state.status = RunStatus.CANCELLED if state.cancel_event.is_set() else RunStatus.FAILED
+                if event_manager:
+                    event_manager.emit("run_failed", {"code": "EXECUTION_AUTHORITY_LOST",
+                                       "message": "Execution stopped before further work.", "retryable": False})
             raise
         except Exception as e:
             logger.exception(f"Unexpected error in worker for run {state.run_id}")
@@ -609,42 +610,6 @@ class Worker:
                 state.status = RunStatus.FAILED
                 runs_failed_total.inc()
         finally:
-            assistant_content = "" if state.status == RunStatus.CANCELLED else full_text
-            state.final_text = assistant_content
-            state.usage = usage
-            self.registry.persist_state(state)
-            if event_manager:
-                await event_manager.stop()
-
-            if not suspended_for_approval:
-                state.ended_at = datetime.now(UTC)
-                self.registry.persist_state(state)
-                started_at = state.started_at or state.created_at
-
-                # 5. Commit: Report final status and usage to Orchestrator
-                commit_req = CommitRequest(
-                    status=state.status,
-                    assistant_message={"content": assistant_content, "format": "markdown"},
-                    usage=usage,
-                    timing=Timing(started_at=started_at, ended_at=state.ended_at)
-                )
-                try:
-                    await self.registry.deliver_terminal_commit(self.orchestrator_client, state.run_id, commit_req)
-                    if continuation:
-                        await self.orchestrator_client.consume_run_continuation(state.run_id)
-                except Exception as e:
-                    logger.error(f"Failed to commit run {state.run_id}: {e}")
-
-                if state.started_at and state.ended_at:
-                    run_duration_seconds.labels(status=state.status.value).observe(
-                        (state.ended_at - state.started_at).total_seconds()
-                    )
-
-            if tool_client is not None and hasattr(tool_client, "close"):
-                try:
-                    await tool_client.close()
-                except Exception:
-                    logger.warning(f"Failed to close tool client for run {state.run_id}")
-            active_runs.dec()
-            self.registry.cleanup_terminal_runs()
-            reset_log_context(token)
+            await finalize_run(self, state, full_text=full_text, usage=usage, event_manager=event_manager,
+                               tool_client=tool_client, continuation=continuation,
+                               suspended_for_approval=suspended_for_approval, token=token)

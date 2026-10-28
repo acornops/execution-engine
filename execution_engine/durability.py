@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Iterable, Protocol
@@ -95,6 +96,10 @@ class RedisLike(Protocol):
         """Check Redis connectivity."""
         ...
 
+    def eval(self, script: str, numkeys: int, *args):
+        """Execute an atomic Redis operation."""
+        ...
+
 
 def _to_iso(value: datetime | None = None) -> str:
     return (value or datetime.now(UTC)).isoformat()
@@ -148,6 +153,7 @@ class DurabilityStore:
         """Initialize a durability store backed by Redis-compatible commands."""
         self.redis_url = redis_url
         self.key_prefix = key_prefix.rstrip(":")
+        self._lock_deadlines: dict[tuple[str, str], float] = {}
         self.redis: RedisLike = client or Redis.from_url(
             redis_url,
             decode_responses=True,
@@ -271,7 +277,32 @@ class DurabilityStore:
 
     def acquire_run_lock(self, run_id: str, owner: str, ttl_seconds: int) -> bool:
         """Acquires the run execution lock if no live owner exists."""
-        return bool(self.redis.set(self._run_lock_key(run_id), owner, ex=ttl_seconds, nx=True))
+        started = time.monotonic()
+        acquired = bool(self.redis.set(self._run_lock_key(run_id), owner, ex=ttl_seconds, nx=True))
+        if acquired:
+            self._lock_deadlines[run_id, owner] = started + ttl_seconds
+        return acquired
+
+    def run_lock_deadline(self, run_id: str, owner: str) -> float:
+        """Conservative local expiry of a successfully acquired execution lock."""
+        return self._lock_deadlines.get((run_id, owner), 0)
+
+    def renew_run_locks(self, run_ids: list[str], owner: str, ttl_seconds: int) -> list[str]:
+        """Extend only locks still owned by this worker; return any lost run IDs."""
+        return self.redis.eval(
+            """
+            local lost = {}
+            for i, key in ipairs(KEYS) do
+                if redis.call('get', key) == ARGV[1] then
+                    redis.call('expire', key, ARGV[2])
+                else
+                    table.insert(lost, ARGV[i + 2])
+                end
+            end
+            return lost
+            """,
+            len(run_ids), *[self._run_lock_key(run_id) for run_id in run_ids], owner, ttl_seconds, *run_ids,
+        )
 
     def run_lock_owner(self, run_id: str) -> str | None:
         """Read the current coordination owner without treating Redis as CP authority."""
@@ -287,6 +318,7 @@ class DurabilityStore:
             "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
             1, self._run_lock_key(run_id), owner,
         )
+        self._lock_deadlines.pop((run_id, owner), None)
 
     def save_authority(self, authority) -> None:
         """Persist cleanup identity independently of volatile task context."""
@@ -446,10 +478,20 @@ class DurabilityStore:
         seq_list = [str(seq) for seq in seqs]
         if not seq_list:
             return
-        self.redis.hdel(self._event_hash_key(run_id), *seq_list)
-        self.redis.zrem(self._event_pending_key(run_id), *seq_list)
-        if self.redis.zcard(self._event_pending_key(run_id)) == 0:
-            self.redis.srem(self._pending_runs_key, run_id)
+        # Removing the discovery index must not race a concurrent event append.
+        self.redis.eval(
+            """
+            for i = 2, #ARGV do
+                redis.call('hdel', KEYS[1], ARGV[i])
+                redis.call('zrem', KEYS[2], ARGV[i])
+            end
+            if redis.call('zcard', KEYS[2]) == 0 then
+                redis.call('srem', KEYS[3], ARGV[1])
+            end
+            """,
+            3, self._event_hash_key(run_id), self._event_pending_key(run_id),
+            self._pending_runs_key, run_id, *seq_list,
+        )
 
     def next_event_seq(self, run_id: str) -> int:
         """Return the next event sequence number for a run."""

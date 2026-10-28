@@ -52,9 +52,19 @@ operation and the existing control-plane retry policy. A later pass retries
 retained work after this budget is exhausted; there is no maximum lifetime
 attempt count. Large backlogs may take multiple passes to drain.
 
+With workspace capacity disabled, queued and running work renews its Redis
+execution locks independently of recovery delivery. Renewal runs every one-third
+of `RUN_ID_LOCK_TTL_SECONDS`, capped at 5 seconds. The existing TTL is a lease
+duration, not a maximum run duration. A short Redis outage affects readiness;
+if ownership changes or cannot be confirmed before its lease expires, the engine
+stops its worker and fails liveness. Revoked workers close local resources without
+overwriting durable state or sending terminal commits. Remaining durable work is
+handled after locks expire. Capacity mode retains control-plane lease authority.
+
 `/health` fails when initialization or an essential engine loop is unavailable;
 `/ready` additionally requires healthy dependencies. With internal TLS, both
-HTTP probes also require the business listener to have started. Either listener
+HTTP probes also require the business listener to be serving, including after
+readiness finishes checking dependencies. Either listener
 exiting unexpectedly terminates the process with a failure status. Normal
 SIGTERM/SIGINT closes both listeners gracefully, with a 30-second shutdown bound.
 Redis connections use `READINESS_CHECK_TIMEOUT_MS` for socket connect/read
@@ -62,7 +72,8 @@ limits as well as the readiness deadline.
 
 Run `task recovery-integration` for local TLS/plaintext process tests. Set
 `ACORNOPS_RECOVERY_REDIS_URL` to an isolated Redis to include the two-replica
-claim test; it uses a unique key prefix and deletes only its own test records.
+claim, live-lock renewal, ownership-loss, and concurrent outbox checks; they use
+unique key prefixes and delete only their own test records.
 
 ## Key Metrics
 
@@ -117,8 +128,9 @@ Every queued attempt, including work recovered from Redis, checks the
 control-plane acquire endpoint before starting. Closing control-plane
 `WORKSPACE_DISPATCH_ENABLED` keeps that work queued even when capacity limits are
 disabled; already executing work may drain. Disabled mode requires a compatible
-`disabled` acquire response and uses only the local worker semaphore, without
-ownership leases, renewal, or release. An incompatible acquire response starts no
+`disabled` acquire response and uses the local worker semaphore without
+control-plane ownership leases, renewal, or release. Redis execution locks still
+renew to distinguish live work from abandoned recovery candidates. An incompatible acquire response starts no
 work. Apply the usual bounded queue-expiry and cancellation checks before reopening
 dispatch after a maintenance window.
 

@@ -9,7 +9,7 @@ from typing import Dict, Optional, Tuple
 
 from execution_engine.capacity import current_authority
 from execution_engine.config import settings
-from execution_engine.durability import TERMINAL_STATUSES, DurabilityStore
+from execution_engine.durability import ACTIVE_STATUSES, TERMINAL_STATUSES, DurabilityStore
 from execution_engine.models import CommitRequest, Event, Timing, Usage
 from execution_engine.orchestrator_client import OrchestratorClient
 from execution_engine.run_scheduling import enqueue_run, finish_execution, refill_queued_runs, resume_run
@@ -94,6 +94,7 @@ class RunState:
         self.session_id = session_id
         self.run_id = run_id
         self.capacity_owner_id = uuid.uuid4().hex
+        self.execution_lock_lost = False
         self.resume_requested_at: datetime | None = None
         self.message_id = message_id
         self.workflow_id = workflow_id
@@ -407,6 +408,8 @@ class RunRegistry:
 
     def persist_state(self, state: RunState) -> None:
         """Persists recoverable run metadata when durability is enabled."""
+        if state.execution_lock_lost:
+            return
         if state.status == RunStatus.RUNNING or state.status.value in TERMINAL_STATUSES:
             state.resume_requested_at = None
         if not self.durability_store:
@@ -445,7 +448,7 @@ class RunRegistry:
             )
 
     @contextmanager
-    def _recovery_claim(self, run_id: str):
+    def _recovery_claim(self, run_id: str, *, delivery: bool = False):
         """Serialize recovery with execution and other replicas using the existing lock."""
         if run_id in self._scheduled:
             yield False
@@ -455,7 +458,11 @@ class RunRegistry:
         recovery_owner = f"recovery:{uuid.uuid4().hex}"
         claimed = store.acquire_run_lock(run_id, recovery_owner, ttl)
         try:
-            yield claimed
+            prepared = True
+            if claimed and delivery and not settings.WORKSPACE_CAPACITY_ENABLED:
+                persisted = store.get_run(run_id)
+                prepared = not persisted or persisted.status not in ACTIVE_STATUSES
+            yield claimed and prepared
         finally:
             if claimed:
                 store.release_run_lock(run_id, recovery_owner)
@@ -538,7 +545,7 @@ class RunRegistry:
         delivered = 0
         for run_id in batch:
             try:
-                with self._recovery_claim(run_id) as claimed:
+                with self._recovery_claim(run_id, delivery=True) as claimed:
                     if not claimed:
                         continue
                     pending_events = store.list_pending_events(run_id, 100)
@@ -598,7 +605,7 @@ class RunRegistry:
         delivered = 0
         for pending in pending_commits:
             try:
-                with self._recovery_claim(pending.run_id) as claimed:
+                with self._recovery_claim(pending.run_id, delivery=True) as claimed:
                     if not claimed or store.list_pending_events(pending.run_id, 1):
                         continue
                     store.mark_terminal_commit_attempt(pending.run_id)
@@ -620,13 +627,9 @@ class RunRegistry:
 
     def durability_store_retention_seconds(self) -> int:
         """Returns terminal commit retention; kept here to avoid importing settings into durability."""
-        from execution_engine.config import settings
-
         return settings.TERMINAL_COMMIT_RETENTION_SECONDS
 
     def _run_lock_ttl_seconds(self) -> int:
-        from execution_engine.config import settings
-
         return settings.run_id_lock_ttl_seconds
 
     def cleanup_terminal_runs(self, now: datetime | None = None) -> int:

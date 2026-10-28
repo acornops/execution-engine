@@ -18,12 +18,16 @@ def enqueue_run(registry, run_id: str) -> bool:
     """
     if registry.durability_store and not settings.WORKSPACE_CAPACITY_ENABLED:
         owner = registry.durability_store.run_lock_owner(run_id)
-        if owner is not None and owner != registry._owner_id:
-            return True  # Another replica already owns this accepted queued run.
-        if owner is None and not registry.durability_store.acquire_run_lock(
+        if owner is None and registry.durability_store.acquire_run_lock(
             run_id, registry._owner_id, registry._run_lock_ttl_seconds()
         ):
-            return True
+            owner = registry._owner_id
+        if owner != registry._owner_id:
+            if run_id not in registry._queued and run_id not in registry._scheduled:
+                # The claiming replica may exit after replay; this replica must
+                # be able to reload the accepted resume during durable refill.
+                registry.forget_local_run(run_id)
+            return True  # Another replica already owns this accepted queued run.
     if run_id in registry._queued or run_id in registry._scheduled:
         return True
     if registry.queue_size + len(registry._scheduled) >= registry.max_concurrent_runs * 2:

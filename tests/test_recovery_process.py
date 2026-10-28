@@ -8,13 +8,20 @@ import subprocess
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
+from threading import Barrier
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
+import execution_engine.app as app_module
+from execution_engine.config import settings
 from execution_engine.durability import DurabilityStore
-from execution_engine.run_registry import RunRegistry
+from execution_engine.models import Event
+from execution_engine.run_registry import RunRegistry, RunStatus
 from tests.test_recovery_lifecycle import client_for, stale_run
 from tests.test_unit import run_payload
 
@@ -45,6 +52,8 @@ async def main():
     app.registry = RunRegistry(2, store)
     app.orchestrator_client = await client_for(lambda req: httpx.Response(404))
     app.worker = SimpleNamespace(run_loop=asyncio.Event().wait)
+    if os.environ.get('EXIT_WORKER') == 'true':
+        app.worker = SimpleNamespace(run_loop=lambda: asyncio.sleep(0.5))
     async def dependencies_ok(*args):
         return True, []
     app.collect_readiness = dependencies_ok
@@ -60,9 +69,13 @@ asyncio.run(main())
 """
 
 
-@pytest.mark.parametrize("tls", [False, True])
-@pytest.mark.parametrize("fail_startup", [False, True])
-def test_actual_launcher_recovery_and_exit_status(tmp_path, tls, fail_startup):
+@pytest.mark.parametrize("tls,failure", [
+    (False, None), (True, None),
+    (False, "startup"), (True, "startup"),
+    (False, "api_bind"), (True, "api_bind"), (True, "probe_bind"),
+    (False, "worker_exit"), (True, "worker_exit"),
+])
+def test_actual_launcher_recovery_and_exit_status(tmp_path, tls, failure):
     api_port, probe_port = free_port(), free_port()
     env = {
         **os.environ,
@@ -75,7 +88,8 @@ def test_actual_launcher_recovery_and_exit_status(tmp_path, tls, fail_startup):
         "INTERNAL_TRANSPORT_TLS_ENABLED": str(tls).lower(),
         "EXECUTION_ENGINE_DISPATCH_TOKEN": "test-dispatch-token",
         "ADDITIONAL_CA_BUNDLE_FILE": "",
-        "FAIL_STARTUP": str(fail_startup).lower(),
+        "FAIL_STARTUP": str(failure == "startup").lower(),
+        "EXIT_WORKER": str(failure == "worker_exit").lower(),
     }
     if tls:
         cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
@@ -108,10 +122,13 @@ def test_actual_launcher_recovery_and_exit_status(tmp_path, tls, fail_startup):
             EXECUTION_GATEWAY_BASE_URL="https://gateway.invalid",
         )
     output = tmp_path / "process.log"
-    with output.open("w") as log:
+    with output.open("w") as log, socket.socket() as blocker:
+        if failure in {"api_bind", "probe_bind"}:
+            blocker.bind(("0.0.0.0", api_port if failure == "api_bind" else probe_port))
+            blocker.listen()
         process = subprocess.Popen([sys.executable, "-c", CHILD], cwd=ROOT, env=env, stdout=log, stderr=log)
         try:
-            if fail_startup:
+            if failure:
                 assert process.wait(timeout=10) != 0
             else:
                 probe = f"http://127.0.0.1:{probe_port if tls else api_port}"
@@ -137,6 +154,7 @@ def test_actual_launcher_recovery_and_exit_status(tmp_path, tls, fail_startup):
                     assert response.status_code == 202
                 process.send_signal(signal.SIGTERM)
                 assert process.wait(timeout=10) == 0, output.read_text()
+            blocker.close()
             for port in (api_port, probe_port):
                 with socket.socket() as sock:
                     assert sock.connect_ex(("127.0.0.1", port)) != 0
@@ -178,3 +196,77 @@ async def test_two_recovery_replicas_use_real_redis_claims():
         if keys:
             store.redis.delete(*keys)
         store.redis.close()
+
+
+@pytest.fixture
+def real_store():
+    redis_url = os.environ.get("ACORNOPS_RECOVERY_REDIS_URL")
+    if not redis_url:
+        pytest.skip("Set ACORNOPS_RECOVERY_REDIS_URL to an isolated Redis for ownership/outbox checks")
+    store = DurabilityStore(redis_url, key_prefix=f"recovery-test-{uuid.uuid4().hex}")
+    try:
+        yield store
+    finally:
+        keys = list(store.redis.scan_iter(f"{store.key_prefix}:*"))
+        if keys:
+            store.redis.delete(*keys)
+        store.redis.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("running", [False, True])
+async def test_real_redis_renews_live_work_and_fences_replacement(monkeypatch, real_store, running):
+    store = real_store
+    foreign_store = DurabilityStore(store.redis_url, key_prefix=store.key_prefix)
+    monkeypatch.setattr(settings, "RUN_ID_LOCK_TTL_SECONDS", 1)
+    monkeypatch.setattr(settings, "WORKSPACE_CAPACITY_ENABLED", False)
+    live, other = RunRegistry(2, store), RunRegistry(2, foreign_store)
+    state, _ = await live.get_or_create("w1", "c1", "kubernetes", "s1", "live", "m1")
+    await live.enqueue("live")
+    if running:
+        await live.dequeue()
+        state.status = RunStatus.RUNNING
+        live.persist_state(state)
+    client = await client_for(lambda req: httpx.Response(200))
+    monkeypatch.setattr(app_module, "registry", live)
+    monkeypatch.setattr(app_module, "worker", SimpleNamespace(run_loop=asyncio.Event().wait))
+    monkeypatch.setattr(app_module, "orchestrator_client", client)
+    try:
+        async with app_module.lifespan(app_module.app):
+            await asyncio.sleep(1.2)
+            assert await other.recover_stale_active_runs() == 0
+            assert other.queue_size == 0
+            assert store.run_lock_owner("live") == live._owner_id
+            assert (await app_module.health()).status_code == 200
+            foreign_store.redis.set(store._run_lock_key("live"), "replacement", ex=10)
+            await asyncio.sleep(0.5)
+            assert (await app_module.health()).status_code == 503
+            assert app_module.runtime.tasks[0].cancelled()
+            assert store.run_lock_owner("live") == "replacement"
+    finally:
+        foreign_store.redis.close()
+
+
+def test_real_redis_concurrent_event_append_remains_discoverable(real_store):
+    store = real_store
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        for number in range(100):
+            run_id = f"outbox-{number}"
+            first = Event(run_id=run_id, seq=1, ts=datetime.now(UTC), type="run_progress", payload={})
+            store.upsert_event(first)
+            start = Barrier(2)
+
+            def acknowledge():
+                start.wait(timeout=5)
+                store.mark_events_delivered(run_id, [1])
+
+            def append():
+                start.wait(timeout=5)
+                store.upsert_event(first.model_copy(update={"seq": 2}))
+
+            ack, write = executor.submit(acknowledge), executor.submit(append)
+            ack.result(timeout=5)
+            write.result(timeout=5)
+            assert [event.seq for event in store.list_pending_events(run_id, 10)] == [2]
+            assert run_id in store.list_pending_run_ids()
+    assert store.pending_event_count() == 100

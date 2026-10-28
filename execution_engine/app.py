@@ -19,6 +19,7 @@ from execution_engine.examples import EXAMPLE_RUN_ID
 from execution_engine.models import RunRequest
 from execution_engine.orchestrator_client import OrchestratorClient
 from execution_engine.readiness import collect_readiness
+from execution_engine.run_leases import maintain_run_locks
 from execution_engine.run_registry import RunRegistry, RunStatus
 from execution_engine.runtime_state import runtime
 from execution_engine.util.logging import bind_log_context, logger, reset_log_context, setup_logging
@@ -58,10 +59,11 @@ async def lifespan(app: FastAPI):
     runtime.started = False
     runtime.tasks = ()
     try:
-        runtime.tasks = (
-            asyncio.create_task(worker.run_loop()),
-            asyncio.create_task(_recovery_loop()),
-        )
+        worker_task = asyncio.create_task(worker.run_loop())
+        tasks = [worker_task, asyncio.create_task(_recovery_loop())]
+        if registry.durability_store and not settings.WORKSPACE_CAPACITY_ENABLED:
+            tasks.append(asyncio.create_task(maintain_run_locks(registry, worker_task)))
+        runtime.tasks = tuple(tasks)
         runtime.started = True
         yield
     finally:
@@ -301,6 +303,7 @@ async def ready() -> JSONResponse:
         return JSONResponse(status_code=503, content={"status": "not_ready", "dependencies": [],
                                                      "detail": "Service initialization or essential task unavailable"})
     is_ready, dependencies = await collect_readiness(orchestrator_client, durability_store)
+    is_ready = is_ready and runtime.healthy
     status_code = 200 if is_ready else 503
     return JSONResponse(
         status_code=status_code,

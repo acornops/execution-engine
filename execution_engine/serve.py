@@ -32,7 +32,10 @@ async def probe_health():
 @probe_app.get("/ready")
 async def probe_ready():
     """Return the application readiness probe payload."""
-    return await ready() if servers and servers.serving else unavailable()
+    if not servers or not servers.serving:
+        return unavailable()
+    response = await ready()
+    return response if servers and servers.serving else unavailable()
 
 
 async def main() -> None:

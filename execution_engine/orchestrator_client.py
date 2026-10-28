@@ -406,6 +406,14 @@ class EventManager:
             await self._flush_task
             self._flush_task = None
 
+    async def abort(self) -> None:
+        """Stop a revoked worker's delivery without draining another owner's outbox."""
+        self._stop_event.set()
+        if self._flush_task:
+            self._flush_task.cancel()
+            await asyncio.gather(self._flush_task, return_exceptions=True)
+            self._flush_task = None
+
     def emit(self, event_type: str, payload: Dict[str, Any]) -> Event:
         """
         Queues an event for emission.

@@ -76,10 +76,31 @@ class InMemoryRedis:
         self.sets: dict[str, set[str]] = {}
         self.zsets: dict[str, dict[str, float]] = {}
 
-    def eval(self, script, numkeys, key, owner):
+    def eval(self, script, numkeys, *args):
+        keys, argv = args[:numkeys], args[numkeys:]
+        if "local lost" in script:
+            owner, ttl, *run_ids = argv
+            lost = []
+            for key, run_id in zip(keys, run_ids, strict=True):
+                if self.get(key) == owner:
+                    self.expire(key, ttl)
+                else:
+                    lost.append(run_id)
+            return lost
+        if "'hdel'" in script:
+            run_id, *seqs = argv
+            self.hdel(keys[0], *seqs)
+            self.zrem(keys[1], *seqs)
+            if self.zcard(keys[1]) == 0:
+                self.srem(keys[2], run_id)
+            return None
+        key, owner = keys[0], argv[0]
         if self.get(key) == owner:
             return self.delete(key)
         return 0
+
+    def expire(self, key, seconds):
+        return int(self.get(key) is not None)
 
     def hscan_iter(self, name, count=100):
         yield from self.hgetall(name).items()

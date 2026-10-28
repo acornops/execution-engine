@@ -28,17 +28,28 @@ locks, retry settings, and probe endpoints instead; no control-plane changes.
   preparing a restart failure. Local scheduled runs and live foreign locks
   remain untouched. A resume accepted during replay is queued after the recovery
   claim is released; recovery cannot release a lock adopted by execution.
+  Both observed contention and a lost NX-acquisition race invalidate unscheduled
+  local cache, so the accepting replica can refill if the recovering replica exits.
   Capacity mode retains control-plane authority handling;
   the engine does not manufacture stale-run failures in that mode.
+- Non-capacity queued/running work renews its existing Redis locks independently
+  of replay, every min(TTL/3, 5 seconds). Renewal compares owners atomically and
+  tracks acquisition epochs so a delayed result cannot revoke a fresh resume.
+  Transient Redis failure is tolerated while confirmed ownership remains valid.
+  Ownership loss stops the worker and fails local health; revoked cleanup cannot
+  overwrite replacement state, emit failure events, or send terminal commits.
 - Prepare at most 25 stale-run failures per pass and yield between candidates.
   Persist the failure event, terminal commit intent, and failed local state
   before making network calls. Reuse the existing restart event after a crash
   between writes. Delivery failure never allocates a fresh failure event.
+  Replay skips non-capacity active state until preparation has durably completed.
 - Replay is isolated per run. Event passes rotate through up to 25 run IDs,
   taking at most 100 events each; terminal-commit passes rotate through the
   existing batch limit. A commit waits for that run's pending events to drain.
   Malformed records remain stored and cannot prevent other records from being
   read, queued, recovered, or cleaned up.
+  Event acknowledgement removes the outbox batch and discovery index atomically
+  so an overlapping append remains discoverable.
 - Rejected events and commits are not acknowledged. Existing terminal-commit
   retention still applies (24 hours by default). Missing-run errors are not
   treated as permission to delete data. Persistent failures need operator
@@ -52,8 +63,10 @@ locks, retry settings, and probe endpoints instead; no control-plane changes.
   wiring, example, and test bypasses. There is no legacy implementation.
 - Engine `/health` reflects initialization and essential loop survival;
   `/ready` additionally checks required dependencies with a deadline.
-  Dependency outages alone do not fail liveness. Redis has actual connect/read
-  deadlines and no hidden connection retry loop.
+  Dependency outages affect readiness; expiry of confirmed execution ownership
+  stops unsafe local work and fails liveness. Redis has actual connect/read
+  deadlines and no hidden connection retry loop. Readiness rechecks local state
+  and listener availability after awaiting dependency checks.
 - A small launcher supervisor owns signals for both listeners. Probe responses
   require the business listener to have actually started. An unexpected return,
   bind/startup failure, or essential engine task exit stops sibling listeners
@@ -75,8 +88,10 @@ Request duration and backlog size affect drain time. Recovery remains bounded
 per delivery and batch rather than by a global pass timeout. Existing authority
 storage and retention contracts are unchanged; artifact-generation redesign,
 automatic orphan retirement, certificate reload, and offline-agent logs belong
-to separate work. A custom low run-lock TTL still requires operators to honor
-the runtime/lock sizing contract.
+to separate work. Lock renewal removes the requirement to size a fixed TTL for
+the entire queue wait plus execution time. A very short TTL still reduces
+tolerance for Redis outages and event-loop stalls. No new operator setting,
+Redis schema, or control-plane contract was introduced.
 
 ## Tasks and verification
 
@@ -108,10 +123,10 @@ Final verification on 2026-10-28:
 
 | Repository | Exact command | Result |
 | --- | --- | --- |
-| execution-engine | `task validate` | Passed: lint, 335 unit tests, contracts, harness, 29 keyless evaluations |
-| execution-engine | `ACORNOPS_RECOVERY_REDIS_URL=redis://127.0.0.1:63032/0 task recovery-integration` | Passed: 5 real process/TLS/Redis tests; temporary Redis container removed afterward |
+| execution-engine | `task validate` | Passed: lint, 348 unit tests, contracts, harness, 29 keyless evaluations |
+| execution-engine | `ACORNOPS_RECOVERY_REDIS_URL=redis://127.0.0.1:49373/0 task recovery-integration` | Passed: 13 real process/TLS/Redis tests |
 | execution-engine | `task test` | Could not execute: Compose execution-engine service is not running |
-| llm-gateway | `task validate` | Passed: lint, contracts, harness, 739 unit tests, 52 keyless evaluations |
+| llm-gateway | `task validate` | Passed: lint, contracts, harness, 740 unit tests, 52 keyless evaluations |
 | acornops-deployment | `task validate` | Passed: Helm/schema, Compose, release matrix, contracts and harness checks |
 | acornops-deployment | `task platform-contracts` | Passed |
 | workspace | `node scripts/harness/check-platform-contracts.mjs` | Passed |
@@ -123,21 +138,39 @@ lock owner could release a resumed run's lock, and signal shutdown could wait
 indefinitely before starting its deadline. Both were reproduced in failing
 regression tests and fixed. Further tests caught stale in-memory state and an
 optional Redis timeout incorrectly becoming required. All four fixes passed
-along with the full suites. No review findings remain unaddressed.
+along with the full suites.
 
-Review decisions retained the existing terminal retention and foreign-run lock
-TTL contract; incorrect TTL sizing can still permit takeover. Automatic
+The user requested a second handoff audit. It exposed cross-replica resume
+starvation, duplicate restart intent after partial preparation, default lock
+expiry during valid live work, and an outbox discovery-index race. These were
+reproduced before fixes. Follow-up review caught the enqueue NX race, revoked
+worker cleanup writing through a replacement owner, and a delayed renewal result
+revoking a fresh resume. All have passing regressions; the final independent
+review closed the findings. The audit also added readiness rechecks after awaited
+work and actual API/probe bind-failure and essential-worker-exit process tests.
+The initial bind-conflict fixture allowed wildcard/loopback coexistence on macOS;
+binding the blocker to the service's wildcard address verified the real failure.
+No material review finding remains open.
+
+Review decisions retain the existing terminal retention. Automatic
 quarantine/generation redesign remains deferred, so permanent/fenced artifacts
 need operator investigation. This patch does not expand validation to all
 JSON-valid semantic corruption (for example timezone-less timestamps), which
 can still require manual repair. Certificate and offline-agent issues remain
 separate. Live rollout and image release verification were not performed.
+The new process tests use real listeners and TLS with mocked control-plane HTTP;
+Redis ownership and outbox checks use an isolated real Redis. They do not replace
+the unavailable full-stack integration suite. Normal worker, cancellation,
+approval/resume, and capacity coverage remains in the full unit suite.
 
 ## Rollout and rollback
 
 Build/release the engine and gateway changes, then remove the obsolete override
 from deployment values/environment files. Existing probe paths and Redis shapes
 remain compatible; this patch does not invent or publish a release image tag.
+For the first engine upgrade, drain active non-capacity runs before mixing old
+and new replicas: older binaries do not renew their execution locks. The same
+consideration applies when rolling back to those binaries.
 The new chart rejects the removed Helm key, so remove it from saved overrides
 before upgrading. Roll back service images if needed; older images default to
 recovery enabled when the removed setting is absent. Do not reset shared Redis

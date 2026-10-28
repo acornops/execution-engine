@@ -40,8 +40,10 @@
 - Keep terminal-state handling idempotent.
 - Capture new runtime invariants in docs or checks when they become durable.
 - Event delivery uses Redis-backed outbox state at `REDIS_URL`; events are marked delivered only after the control plane acknowledges them.
+- Event acknowledgement and removal from the pending-run index are atomic, so concurrent appends remain discoverable.
 - Terminal commits are persisted before delivery and retried until the control plane acknowledges them or the `TERMINAL_COMMIT_RETENTION_SECONDS` retention window expires.
 - Background recovery marks unlocked persisted running/cancelling runs failed with `EXECUTION_ENGINE_RESTARTED`; queued runs are refilled, while runs already persisted as `waiting_for_approval` are owned by the control-plane continuation and are not stale active execution.
+- Non-capacity execution renews Redis ownership for locally queued/scheduled active work. Recovery delivery waits until restart-failure preparation has durably left the active state. Losing ownership stops local execution without emitting events, overwriting replacement state, or committing from the revoked worker.
 - Write approval resume always bootstraps fresh credentials and revalidates the pending tool against the current allowed tool catalog before execution.
 - Write approval resume seeds event sequencing from the control-plane replay cursor and preserves any higher Redis outbox cursor before emitting resumed approval or tool-result events.
 - Every validated dispatch, including approval resume, emits `run_started` before
@@ -60,7 +62,7 @@
 
 ## Health And Readiness
 
-- `GET /health` checks local initialization and essential loop survival only. Dependency failures do not fail liveness.
+- `GET /health` checks local initialization and essential loop survival only. A dependency outage affects readiness; an expired or replaced execution lease is a local safety failure and stops the worker.
 - `GET /ready` additionally requires successful local initialization and live essential loops. It is the traffic-gating endpoint. It checks control-plane reachability, Redis when configured or required, and llm-gateway reachability when `EXECUTION_GATEWAY_BASE_URL` is configured.
 - `acornops-deployment` should wire load balancers, Compose healthchecks, and Kubernetes readiness probes to `/ready`; deployment topology does not live in this repo.
 
