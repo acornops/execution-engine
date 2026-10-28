@@ -2,6 +2,7 @@
 
 import os
 import signal
+import ssl
 import subprocess
 import sys
 import time
@@ -15,7 +16,7 @@ from tests.test_integration import target_run_payload
 from tests.test_recovery_process import ROOT, free_port, real_store  # noqa: F401, F811
 
 HARNESS = """
-import asyncio, json, os
+import asyncio, json, os, ssl
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 import uvicorn
@@ -69,7 +70,9 @@ async def stream(request: Request):
 kwargs = {}
 if os.environ['INTERNAL_TRANSPORT_TLS_ENABLED'] == 'true':
     kwargs = dict(ssl_certfile=os.environ['INTERNAL_TRANSPORT_TLS_CERT_FILE'],
-                  ssl_keyfile=os.environ['INTERNAL_TRANSPORT_TLS_KEY_FILE'])
+                  ssl_keyfile=os.environ['INTERNAL_TRANSPORT_TLS_KEY_FILE'],
+                  ssl_ca_certs=os.environ['INTERNAL_TRANSPORT_TLS_CA_FILE'],
+                  ssl_cert_reqs=ssl.CERT_REQUIRED)
 uvicorn.run(app, host='127.0.0.1', port=int(os.environ['HARNESS_PORT']), **kwargs)
 """
 
@@ -114,6 +117,7 @@ def native_stack(tmp_path, *, tls=False, capacity=False, drain=4, duration=1, sl
         "SLOW_COMMIT": str(slow_commit).lower(),
         "MAX_CONCURRENT_RUNS": "1",
     }
+    client_context = True
     if tls:
         cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
         subprocess.run(
@@ -142,15 +146,17 @@ def native_stack(tmp_path, *, tls=False, capacity=False, drain=4, duration=1, sl
             INTERNAL_TRANSPORT_TLS_CERT_FILE=str(cert),
             INTERNAL_TRANSPORT_TLS_KEY_FILE=str(key),
             INTERNAL_TRANSPORT_TLS_CA_FILE=str(cert),
-            INTERNAL_TRANSPORT_TLS_REQUIRE_CLIENT_CERT="false",
+            INTERNAL_TRANSPORT_TLS_REQUIRE_CLIENT_CERT="true",
         )
+        client_context = ssl.create_default_context(cafile=str(cert))
+        client_context.load_cert_chain(cert, key)
     with (tmp_path / "harness.log").open("w") as hlog, (tmp_path / "engine.log").open("w") as elog:
         harness = subprocess.Popen([sys.executable, "-c", HARNESS], cwd=ROOT, env=env, stdout=hlog, stderr=hlog)
         engine = subprocess.Popen(
             [sys.executable, "-m", "execution_engine.serve"], cwd=ROOT, env=env, stdout=elog, stderr=elog
         )
         try:
-            with httpx.Client(verify=False, timeout=1, trust_env=False) as client:
+            with httpx.Client(verify=client_context, timeout=1, trust_env=False) as client:
                 wait_until(lambda: client.get(probe_url + "/ready").status_code == 200)
                 yield engine, client, api_url, probe_url, harness_url
         finally:
@@ -168,6 +174,13 @@ def native_stack(tmp_path, *, tls=False, capacity=False, drain=4, duration=1, sl
 def test_native_sigterm_keeps_stream_and_renewals_alive(tmp_path, tls, capacity):
     run_id = str(uuid.uuid4())
     with native_stack(tmp_path, tls=tls, capacity=capacity) as (engine, client, api, probe, harness):
+        if tls:
+            anonymous_context = ssl.create_default_context(cafile=str(tmp_path / "cert.pem"))
+            with httpx.Client(verify=anonymous_context, timeout=1, trust_env=False) as anonymous:
+                for endpoint in (api + "/health", harness + "/health"):
+                    with pytest.raises(httpx.TransportError):
+                        anonymous.get(endpoint)
+                assert anonymous.get(probe + "/health").status_code == 200
         payload = target_run_payload(run_id)
         if capacity:
             payload.update(capacity_contract_version=1, capacity_enabled=True)
