@@ -239,8 +239,11 @@ def test_native_durable_cancellation_reaches_owner_after_readiness_withdrawal(tm
 
 
 @pytest.mark.asyncio
-async def test_real_redis_drain_releases_only_unscheduled_and_preserves_replacement(real_store):  # noqa: F811
-    from execution_engine.run_registry import RunRegistry
+async def test_real_redis_drain_releases_only_unscheduled_and_preserves_replacement(monkeypatch, real_store):  # noqa: F811
+    from datetime import UTC, datetime
+
+    import execution_engine.app as app_module
+    from execution_engine.run_registry import RunRegistry, RunStatus
 
     first, second = RunRegistry(2, real_store), RunRegistry(2, real_store)
     for run_id in ("active", "queued"):
@@ -248,12 +251,30 @@ async def test_real_redis_drain_releases_only_unscheduled_and_preserves_replacem
         await first.enqueue(run_id)
     assert await first.dequeue() == "active"
     first.task_done()
+    stale = first.get_by_run_id("queued")
     first.begin_drain()
     second.refill_queued_runs()
     assert second._queued == {"queued"}
     first.release_unscheduled_claims()
     assert real_store.run_lock_owner("queued") == second._owner_id
     assert real_store.run_lock_owner("active") == first._owner_id
+    current = second.get_by_run_id("queued")
+    assert await second.dequeue() == "queued"
+    second.task_done()
+    current.status = RunStatus.COMPLETED
+    current.ended_at = datetime.now(UTC)
+    second.persist_state(current)
+    monkeypatch.setattr(app_module, "registry", first)
+    assert (await app_module.cancel_run("queued")).status_code == 202
+    assert first.get_by_run_id("queued") is None
+    assert not stale.cancel_event.is_set()
+    stale.status = RunStatus.CANCELLED
+    first.persist_state(stale)
+    assert current.status == RunStatus.COMPLETED
+    assert not current.cancel_event.is_set()
+    persisted = real_store.get_run("queued")
+    assert persisted.status == "completed"
+    assert persisted.ended_at == current.ended_at
 
 
 @pytest.mark.asyncio

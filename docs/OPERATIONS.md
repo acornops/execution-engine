@@ -71,7 +71,10 @@ loop. `/ready` immediately returns 503; `/health` stays live while essential
 workers and listeners remain healthy. The default `SERVICE_DRAIN_TIMEOUT_SECONDS`
 is 870. The first signal sets one monotonic deadline; repeated signals do not
 change it. Accepted tasks finish normally, including their finalizers. Queued
-claims with no scheduled task are released promptly; scheduled tasks still marked
+claims with no scheduled task are fenced and removed from the local cancellation
+cache before release, so late callbacks cannot overwrite a replacement. Uncertain
+releases retain separate retry IDs and remain conditional on the old Redis owner.
+Scheduled tasks still marked
 `queued` retain ownership until they settle. Approval/dependency continuations
 remain durable for another replica rather than occupying this shutdown window.
 

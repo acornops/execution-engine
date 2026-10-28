@@ -23,10 +23,21 @@ def release_unscheduled_claims(registry) -> None:
         return
     for state in list(registry._runs.values()):
         if state.status == RunStatus.QUEUED and state.run_id not in registry._scheduled:
-            try:
-                registry.durability_store.release_run_lock(state.run_id, registry._owner_id)
-            except Exception:
-                logger.warning("Queued claim release failed for %s; retrying during drain", state.run_id)
+            # A lost release acknowledgement can mean a replacement already owns
+            # this run. Fence held references before touching Redis and remove
+            # the cache used by legacy direct cancellation.
+            state.execution_lock_lost = True
+            registry._drain_release_ids.add(state.run_id)
+            registry.forget_local_run(state.run_id)
+    # Retry uncertain releases independently of cached state or later callbacks
+    # mutating their old references. Redis deletion remains owner-conditional.
+    for run_id in tuple(registry._drain_release_ids):
+        try:
+            registry.durability_store.release_run_lock(run_id, registry._owner_id)
+        except Exception:
+            logger.warning("Queued claim release failed for %s; retrying during drain", run_id)
+        else:
+            registry._drain_release_ids.discard(run_id)
 
 
 def owned_run_ids(registry) -> set[str]:

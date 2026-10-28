@@ -321,3 +321,85 @@ async def test_deadline_cannot_interrupt_terminal_commit_already_in_finalizer():
     await asyncio.gather(task, return_exceptions=True)
     assert delivered.is_set()
     assert registry.durability_store.pending_terminal_commit_count() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("release_failure", [None, "before_delete", "after_delete"])
+async def test_late_direct_cancel_and_stale_reference_cannot_overwrite_replacement(monkeypatch, release_failure):
+    from datetime import UTC, datetime
+
+    store = durability_store()
+    first, second = RunRegistry(1, store), RunRegistry(1, store)
+    stale, _ = await first.get_or_create("w", "t", "kubernetes", "s", "handoff", "m")
+    await first.enqueue("handoff")
+    original_release = store.release_run_lock
+    attempts = []
+
+    def unreliable_release(run_id, owner):
+        attempts.append((run_id, owner))
+        if len(attempts) == 1 and release_failure == "before_delete":
+            raise ConnectionError("request did not reach Redis")
+        original_release(run_id, owner)
+        if len(attempts) == 1 and release_failure == "after_delete":
+            raise ConnectionError("acknowledgement lost after Redis deleted the lock")
+
+    monkeypatch.setattr(store, "release_run_lock", unreliable_release)
+    monkeypatch.setattr(app_module, "registry", first)
+    first.begin_drain()
+    assert (await app_module.cancel_run("handoff")).status_code == 202
+    assert not stale.cancel_event.is_set()
+    assert stale.status == RunStatus.QUEUED
+    assert first.get_by_run_id("handoff") is None
+    assert stale.execution_lock_lost
+    assert store.get_run("handoff").status == "queued"
+
+    # A callback may already hold this reference and even mutate its status.
+    stale.status = RunStatus.CANCELLED
+    first.persist_state(stale)
+    assert store.get_run("handoff").status == "queued"
+    if release_failure == "before_delete":
+        assert store.run_lock_owner("handoff") == first._owner_id
+        first.release_unscheduled_claims()
+    second.refill_queued_runs()
+    current = second.get_by_run_id("handoff")
+    assert current is not None
+    assert store.run_lock_owner("handoff") == second._owner_id
+    # Retrying an uncertain release must still be fenced to the previous owner.
+    first.release_unscheduled_claims()
+    assert store.run_lock_owner("handoff") == second._owner_id
+    assert await second.dequeue() == "handoff"
+    second.task_done()
+    current.status = RunStatus.COMPLETED
+    current.ended_at = datetime.now(UTC)
+    second.persist_state(current)
+    expected_ended_at = current.ended_at
+    assert (await app_module.cancel_run("handoff")).status_code == 202
+    stale.ended_at = None
+    first.persist_state(stale)
+    assert first.get_by_run_id("handoff") is None
+    assert first.owned_run_ids() == set()
+    assert current.status == RunStatus.COMPLETED
+    assert current.ended_at == expected_ended_at
+    assert not current.cancel_event.is_set()
+    persisted = store.get_run("handoff")
+    assert persisted.status == "completed"
+    assert persisted.ended_at == expected_ended_at
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [RunStatus.QUEUED, RunStatus.RUNNING])
+async def test_direct_cancel_still_reaches_scheduled_owner_during_drain(monkeypatch, status):
+    registry = RunRegistry(1, durability_store())
+    state, _ = await registry.get_or_create("w", "t", "kubernetes", "s", "owned", "m")
+    await registry.enqueue("owned")
+    await registry.dequeue()
+    registry.task_done()
+    state.status = status
+    registry.persist_state(state)
+    registry.begin_drain()
+    monkeypatch.setattr(app_module, "registry", registry)
+    assert (await app_module.cancel_run("owned")).status_code == 202
+    assert state.cancel_event.is_set()
+    assert not state.execution_lock_lost
+    assert registry.get_by_run_id("owned") is state
+    assert registry.durability_store.get_run("owned").status in {"cancelled", "cancelling"}

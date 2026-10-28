@@ -173,6 +173,7 @@ class RunRegistry:
             max_concurrent_runs: Maximum number of concurrent runs allowed.
         """
         self.draining = False
+        self._drain_release_ids: set[str] = set()
         self.active_tasks: set[asyncio.Task] = set()
         self._runs: Dict[RunKey, RunState] = {}
         self._run_id_to_key: Dict[str, RunKey] = {}
