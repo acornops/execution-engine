@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Dict, Optional, Tuple
@@ -163,6 +164,8 @@ class RunRegistry:
         self.durability_store = durability_store
         self.terminal_run_ttl_seconds = terminal_run_ttl_seconds
         self._owner_id = uuid.uuid4().hex
+        self._event_recovery_offset = 0
+        self._commit_recovery_offset = 0
 
     async def get_or_create(
         self,
@@ -441,109 +444,117 @@ class RunRegistry:
                 self._run_lock_ttl_seconds(),
             )
 
-    async def recover_stale_active_runs(self, orchestrator_client: OrchestratorClient) -> int:
-        """
-        Fails active runs left behind by a previous process.
+    @contextmanager
+    def _recovery_claim(self, run_id: str):
+        """Serialize recovery with execution and other replicas using the existing lock."""
+        if run_id in self._scheduled:
+            yield False
+            return
+        store = self.durability_store
+        ttl = max(self._run_lock_ttl_seconds(), settings.ORCH_RETRY_MAX_ELAPSED_SECONDS + 30)
+        recovery_owner = f"recovery:{uuid.uuid4().hex}"
+        claimed = store.acquire_run_lock(run_id, recovery_owner, ttl)
+        try:
+            yield claimed
+        finally:
+            if claimed:
+                store.release_run_lock(run_id, recovery_owner)
+                # A resume accepted during replay waits behind the foreign claim.
+                # Drop its unscheduled cache so the next durable refill can enqueue it.
+                state = self.get_by_run_id(run_id)
+                if (state and state.status == RunStatus.QUEUED
+                        and run_id not in self._queued and run_id not in self._scheduled):
+                    self.forget_local_run(run_id)
 
-        Arbitrary in-flight agent work is not resumable. Explicit failure
-        prevents control-plane runs from staying permanently running after an
-        engine restart. Runs paused for write approval are excluded from active
-        recovery because their continuation is stored in the control plane.
-        """
-        if not self.durability_store:
+    async def recover_stale_active_runs(self) -> int:
+        """Persist restart failures before delivery; one bad run cannot abort recovery."""
+        store = self.durability_store
+        if not store:
             return 0
-
         self.refill_queued_runs()
         if settings.WORKSPACE_CAPACITY_ENABLED:
             return 0
         recovered = 0
-        for persisted in self.durability_store.list_active_runs():
-            if not settings.WORKSPACE_CAPACITY_ENABLED and self.durability_store.run_has_lock(persisted.run_id):
+        for candidate in store.list_active_runs():
+            if recovered >= 25:
+                break
+            await asyncio.sleep(0)
+            if candidate.status == "queued":
                 continue
-            if persisted.status == "queued":
-                continue
-            if self.durability_store.run_has_lock(persisted.run_id):
-                continue
-            if settings.WORKSPACE_CAPACITY_ENABLED:
-                continue
-            ended_at = datetime.now(UTC)
-            started_at = persisted.started_at or persisted.created_at
-            event = Event(
-                run_id=persisted.run_id,
-                seq=self.durability_store.next_event_seq(persisted.run_id),
-                ts=ended_at,
-                type="run_failed",
-                payload={
-                    "code": "EXECUTION_ENGINE_RESTARTED",
-                    "message": "Execution engine restarted before this run reached a terminal state.",
-                    "retryable": True,
-                },
-            )
-            self.durability_store.upsert_event(event)
-            pending_events = self.durability_store.list_pending_events(persisted.run_id, 100)
-            await orchestrator_client.post_events(persisted.run_id, pending_events)
-            self.durability_store.mark_events_delivered(persisted.run_id, [pending.seq for pending in pending_events])
-            event_outbox_pending.set(self.durability_store.pending_event_count())
-
-            commit_req = CommitRequest(
-                status=RunStatus.FAILED.value,
-                assistant_message={
-                    "content": (
-                        "The execution engine restarted before this troubleshooting run finished. "
-                        "Please retry the run."
-                    ),
-                    "format": "markdown",
-                },
-                usage=Usage(input_tokens=0, output_tokens=0, tool_calls=0),
-                timing=Timing(started_at=started_at, ended_at=ended_at),
-            )
-            await self.persist_terminal_commit(persisted.run_id, commit_req)
-            await self.flush_pending_terminal_commits(orchestrator_client)
-
-            state = RunState(
-                persisted.workspace_id,
-                persisted.target_id,
-                persisted.target_type,
-                persisted.session_id,
-                persisted.run_id,
-                persisted.message_id,
-                scope_type=persisted.scope_type,
-                workflow_id=persisted.workflow_id,
-                execution_id=persisted.execution_id,
-                workflow_session_id=persisted.workflow_session_id,
-                executor_role=persisted.executor_role,
-                parent_run_id=persisted.parent_run_id,
-                agent_id=persisted.agent_id,
-                trigger_id=persisted.trigger_id,
-            )
-            state.status = RunStatus.FAILED
-            state.created_at = persisted.created_at
-            state.started_at = started_at
-            state.ended_at = ended_at
-            self.persist_state(state)
-            recovered += 1
-            logger.warning(f"Recovered stale active run {persisted.run_id} as failed after execution-engine restart")
+            try:
+                with self._recovery_claim(candidate.run_id) as claimed:
+                    if not claimed:
+                        continue
+                    # A different process may have finished while we acquired the claim.
+                    persisted = store.get_run(candidate.run_id)
+                    if not persisted or persisted.status not in {"running", "cancelling"}:
+                        continue
+                    ended_at = datetime.now(UTC)
+                    started_at = persisted.started_at or persisted.created_at
+                    # If the process died between durable writes, reuse its failure intent.
+                    event = store.last_pending_event(persisted.run_id)
+                    if not (event and event.type == "run_failed"
+                            and event.payload.get("code") == "EXECUTION_ENGINE_RESTARTED"):
+                        event = Event(
+                            run_id=persisted.run_id, seq=store.next_event_seq(persisted.run_id),
+                            ts=ended_at, type="run_failed", payload={
+                                "code": "EXECUTION_ENGINE_RESTARTED",
+                                "message": "Execution engine restarted before this run reached a terminal state.",
+                                "retryable": True,
+                            },
+                        )
+                        store.upsert_event(event)
+                    ended_at = event.ts
+                    await self.persist_terminal_commit(persisted.run_id, CommitRequest(
+                        status=RunStatus.FAILED.value,
+                        assistant_message={
+                            "content": "The execution engine restarted before this troubleshooting run finished. "
+                                       "Please retry the run.",
+                            "format": "markdown",
+                        },
+                        usage=Usage(input_tokens=0, output_tokens=0, tool_calls=0),
+                        timing=Timing(started_at=started_at, ended_at=ended_at),
+                    ))
+                    state = self.get_by_run_id(persisted.run_id) or self._state_from_persisted(persisted)
+                    state.status = RunStatus.FAILED
+                    state.started_at = started_at
+                    state.ended_at = ended_at
+                    self.persist_state(state)
+                    recovered += 1
+                    logger.warning(f"Recovered stale active run {persisted.run_id} as failed after engine restart")
+            except Exception:
+                logger.exception(f"Could not prepare recovery for run {candidate.run_id}; durable work retained")
         return recovered
 
     async def flush_pending_events(self, orchestrator_client: OrchestratorClient) -> int:
-        """Flushes durable outbox events left by a previous process."""
-        if not self.durability_store:
+        """Replay one batch per run, rotating fairly and retaining rejected work."""
+        store = self.durability_store
+        if not store:
             return 0
-
+        run_ids = store.list_pending_run_ids()
+        offset = self._event_recovery_offset % max(len(run_ids), 1)
+        batch = (run_ids[offset:] + run_ids[:offset])[:25]
+        self._event_recovery_offset = (offset + len(batch)) % max(len(run_ids), 1)
         delivered = 0
-        for run_id in self.durability_store.list_pending_run_ids():
-            while True:
-                pending_events = self.durability_store.list_pending_events(run_id, 100)
-                if not pending_events:
-                    break
-                token = current_authority.set(self.durability_store.load_authority(run_id))
-                try:
-                    await orchestrator_client.post_events(run_id, pending_events)
-                finally:
-                    current_authority.reset(token)
-                self.durability_store.mark_events_delivered(run_id, [event.seq for event in pending_events])
-                event_outbox_pending.set(self.durability_store.pending_event_count())
-                delivered += len(pending_events)
+        for run_id in batch:
+            try:
+                with self._recovery_claim(run_id) as claimed:
+                    if not claimed:
+                        continue
+                    pending_events = store.list_pending_events(run_id, 100)
+                    if not pending_events:
+                        continue
+                    token = current_authority.set(store.load_authority(run_id))
+                    try:
+                        async with asyncio.timeout(settings.ORCH_RETRY_MAX_ELAPSED_SECONDS):
+                            await orchestrator_client.post_events(run_id, pending_events)
+                    finally:
+                        current_authority.reset(token)
+                    store.mark_events_delivered(run_id, [event.seq for event in pending_events])
+                    delivered += len(pending_events)
+            except Exception:
+                logger.warning(f"Event recovery failed for run {run_id}; durable work retained")
+        event_outbox_pending.set(store.pending_event_count())
         return delivered
 
     async def persist_terminal_commit(self, run_id: str, commit_req: CommitRequest) -> None:
@@ -578,24 +589,30 @@ class RunRegistry:
         if not self.durability_store:
             return 0
 
-        delivered = 0
-        pending_commits = self.durability_store.list_pending_terminal_commits(
-            limit,
-            retention_seconds=self.durability_store_retention_seconds(),
+        store = self.durability_store
+        offset = self._commit_recovery_offset % max(store.pending_terminal_commit_count(), 1)
+        pending_commits = store.list_pending_terminal_commits(
+            limit, retention_seconds=self.durability_store_retention_seconds(), offset=offset,
         )
+        self._commit_recovery_offset = offset + limit
+        delivered = 0
         for pending in pending_commits:
-            self.durability_store.mark_terminal_commit_attempt(pending.run_id)
             try:
-                token = current_authority.set(self.durability_store.load_authority(pending.run_id))
-                try:
-                    await orchestrator_client.commit(pending.run_id, pending.commit)
-                finally:
-                    current_authority.reset(token)
+                with self._recovery_claim(pending.run_id) as claimed:
+                    if not claimed or store.list_pending_events(pending.run_id, 1):
+                        continue
+                    store.mark_terminal_commit_attempt(pending.run_id)
+                    token = current_authority.set(store.load_authority(pending.run_id))
+                    try:
+                        async with asyncio.timeout(settings.ORCH_RETRY_MAX_ELAPSED_SECONDS):
+                            await orchestrator_client.commit(pending.run_id, pending.commit)
+                    finally:
+                        current_authority.reset(token)
+                    store.mark_terminal_commit_delivered(pending.run_id)
             except Exception:
                 terminal_commits_total.labels(result="failure").inc()
-                logger.warning(f"Terminal commit retry failed for run {pending.run_id}")
+                logger.warning(f"Terminal commit retry failed for run {pending.run_id}; durable work retained")
                 continue
-            self.durability_store.mark_terminal_commit_delivered(pending.run_id)
             terminal_commits_total.labels(result="success").inc()
             delivered += 1
         terminal_commits_pending.set(self.durability_store.pending_terminal_commit_count())

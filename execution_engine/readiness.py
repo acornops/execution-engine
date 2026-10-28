@@ -23,13 +23,15 @@ class DependencyStatus:
     required: bool = True
 
 
-async def _bounded_check(check: Callable[[], Awaitable[DependencyStatus]]) -> DependencyStatus:
+async def _bounded_check(
+    check: Callable[[], Awaitable[DependencyStatus]], name: str = "unknown", required: bool = True,
+) -> DependencyStatus:
     try:
         return await asyncio.wait_for(check(), timeout=settings.READINESS_CHECK_TIMEOUT_MS / 1000.0)
     except TimeoutError:
-        return DependencyStatus(name="unknown", ok=False, detail="readiness check timed out")
+        return DependencyStatus(name=name, ok=False, detail="readiness check timed out", required=required)
     except Exception as exc:
-        return DependencyStatus(name="unknown", ok=False, detail=str(exc))
+        return DependencyStatus(name=name, ok=False, detail=str(exc), required=required)
 
 
 async def check_orchestrator(client: OrchestratorClient) -> DependencyStatus:
@@ -84,9 +86,9 @@ async def collect_readiness(
 ) -> tuple[bool, list[DependencyStatus]]:
     """Runs all readiness checks and updates readiness metrics."""
     checks = [
-        check_orchestrator(orchestrator_client),
-        check_redis(durability_store),
-        check_gateway(),
+        _bounded_check(lambda: check_orchestrator(orchestrator_client), "orchestrator"),
+        _bounded_check(lambda: check_redis(durability_store), "redis", required=settings.is_production),
+        _bounded_check(check_gateway, "llm_gateway"),
     ]
     results = await asyncio.gather(*checks)
     for result in results:

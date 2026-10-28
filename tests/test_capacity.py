@@ -95,7 +95,7 @@ async def test_disabled_capacity_recovered_queue_waits_for_dispatch_reopening(mo
 
     worker._do_execute_run = execute
     try:
-        await restarted.recover_stale_active_runs(client)
+        await restarted.recover_stale_active_runs()
         assert restarted.queue_size == 1
         run_id = await restarted.dequeue()
         restarted.task_done()
@@ -526,7 +526,7 @@ async def test_capacity_mode_recovers_queued_work_despite_old_redis_owner(monkey
     previous = RunRegistry(1, store)
     await previous.get_or_create("w", "t", "kubernetes", "s", "r", "m")
     restarted = RunRegistry(1, store)
-    await restarted.recover_stale_active_runs(AsyncMock())
+    await restarted.recover_stale_active_runs()
     assert restarted.queue_size == 1
 
 
@@ -618,7 +618,7 @@ async def test_recovered_queue_refills_after_local_slots_are_released(monkeypatc
         await old.get_or_create("w", "t", "kubernetes", "s", run_id, "m")
         await old.enqueue(run_id)
     registry = RunRegistry(1, store)
-    await registry.recover_stale_active_runs(AsyncMock())
+    await registry.recover_stale_active_runs()
     assert registry.queue_size == 2
     assert len(registry._runs) == 2
     seen = []
@@ -650,7 +650,7 @@ async def test_pending_resume_is_recoverable_before_previous_worker_unwinds(monk
     await previous.resume(state)
     assert store.get_run("r").status == "waiting_for_approval"
     restarted = RunRegistry(1, store)
-    await restarted.recover_stale_active_runs(AsyncMock())
+    await restarted.recover_stale_active_runs()
     assert restarted.queue_size == 1
     resumed = restarted.get_by_run_id("r")
     assert resumed.resume_requested_at is not None

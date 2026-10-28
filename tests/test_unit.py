@@ -1143,9 +1143,11 @@ async def test_run_registry_recovers_stale_active_runs():
     client.post_events = AsyncMock()
     client.commit = AsyncMock()
 
-    recovered = await recovered_registry.recover_stale_active_runs(client)
+    recovered = await recovered_registry.recover_stale_active_runs()
 
     assert recovered == 1
+    await recovered_registry.flush_pending_events(client)
+    await recovered_registry.flush_pending_terminal_commits(client)
     client.post_events.assert_awaited_once()
     posted_events = client.post_events.call_args.args[1]
     assert [event.type for event in posted_events] == ["run_failed"]
@@ -1170,7 +1172,7 @@ async def test_run_registry_does_not_recover_active_run_with_live_lock():
     client.post_events = AsyncMock()
     client.commit = AsyncMock()
 
-    recovered = await recovered_registry.recover_stale_active_runs(client)
+    recovered = await recovered_registry.recover_stale_active_runs()
 
     assert recovered == 0
     client.post_events.assert_not_awaited()
@@ -1403,7 +1405,6 @@ async def test_coordination_functions_reject_unknown_arguments_before_orchestrat
 
 def test_start_run_requires_dispatch_token(monkeypatch):
     monkeypatch.setattr(settings, "EXECUTION_ENGINE_DISPATCH_TOKEN", "test-dispatch-token")
-    monkeypatch.setattr(settings, "STALE_ACTIVE_RUN_RECOVERY_ON_STARTUP", False)
     monkeypatch.setattr(
         app_module,
         "registry",
@@ -1433,7 +1434,7 @@ def test_start_run_requires_dispatch_token(monkeypatch):
 
 
 def test_request_id_middleware_propagates_header(monkeypatch):
-    monkeypatch.setattr(settings, "STALE_ACTIVE_RUN_RECOVERY_ON_STARTUP", False)
+    monkeypatch.setattr(app_module, "runtime", MagicMock(healthy=True))
     monkeypatch.setattr(app_module, "APP_VERSION", "9.9.9")
     client = TestClient(app)
     try:
@@ -1475,7 +1476,6 @@ def test_resolve_app_version_returns_unknown_when_sources_unavailable(monkeypatc
 
 @pytest.mark.asyncio
 async def test_request_context_middleware_rejects_large_request_bodies(monkeypatch):
-    monkeypatch.setattr(settings, "STALE_ACTIVE_RUN_RECOVERY_ON_STARTUP", False)
     monkeypatch.setattr(settings, "MAX_REQUEST_BODY_BYTES", 4)
 
     async def receive() -> dict[str, object]:
@@ -1509,7 +1509,6 @@ async def test_request_context_middleware_rejects_large_request_bodies(monkeypat
 
 @pytest.mark.asyncio
 async def test_request_context_middleware_returns_timeout_response(monkeypatch):
-    monkeypatch.setattr(settings, "STALE_ACTIVE_RUN_RECOVERY_ON_STARTUP", False)
     monkeypatch.setattr(settings, "DISPATCH_REQUEST_TIMEOUT_SECONDS", 0.001)
 
     async def receive() -> dict[str, object]:
@@ -1543,6 +1542,7 @@ async def test_request_context_middleware_returns_timeout_response(monkeypatch):
 
 
 def test_ready_reports_dependency_status(monkeypatch):
+    monkeypatch.setattr(app_module, "runtime", MagicMock(healthy=True))
     monkeypatch.setattr(settings, "EXECUTION_GATEWAY_BASE_URL", None)
     monkeypatch.setattr(settings, "APP_ENV", "development")
     monkeypatch.setattr(app_module, "durability_store", durability_store())
@@ -1561,7 +1561,7 @@ def test_ready_reports_dependency_status(monkeypatch):
 
 
 def test_ready_returns_503_when_required_dependency_fails(monkeypatch):
-    monkeypatch.setattr(settings, "STALE_ACTIVE_RUN_RECOVERY_ON_STARTUP", False)
+    monkeypatch.setattr(app_module, "runtime", MagicMock(healthy=True))
     monkeypatch.setattr(
         app_module,
         "collect_readiness",
@@ -1585,7 +1585,6 @@ def test_ready_returns_503_when_required_dependency_fails(monkeypatch):
 
 
 def test_metrics_endpoint_exposes_prometheus_payload(monkeypatch):
-    monkeypatch.setattr(settings, "STALE_ACTIVE_RUN_RECOVERY_ON_STARTUP", False)
 
     client = TestClient(app)
     try:
@@ -1599,7 +1598,6 @@ def test_metrics_endpoint_exposes_prometheus_payload(monkeypatch):
 
 def test_cancel_run_requires_dispatch_token(monkeypatch):
     monkeypatch.setattr(settings, "EXECUTION_ENGINE_DISPATCH_TOKEN", "test-dispatch-token")
-    monkeypatch.setattr(settings, "STALE_ACTIVE_RUN_RECOVERY_ON_STARTUP", False)
     monkeypatch.setattr(
         app_module,
         "registry",
@@ -1629,7 +1627,6 @@ def test_cancel_run_requires_dispatch_token(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancel_run_marks_queued_runs_cancelled(monkeypatch):
     monkeypatch.setattr(settings, "EXECUTION_ENGINE_DISPATCH_TOKEN", "test-dispatch-token")
-    monkeypatch.setattr(settings, "STALE_ACTIVE_RUN_RECOVERY_ON_STARTUP", False)
     registry = RunRegistry(max_concurrent_runs=10, durability_store=durability_store())
     monkeypatch.setattr(app_module, "registry", registry)
     state, _ = await registry.get_or_create(
@@ -1655,7 +1652,6 @@ async def test_cancel_run_marks_queued_runs_cancelled(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancel_run_persists_active_runs_as_cancelling(monkeypatch):
     monkeypatch.setattr(settings, "EXECUTION_ENGINE_DISPATCH_TOKEN", "test-dispatch-token")
-    monkeypatch.setattr(settings, "STALE_ACTIVE_RUN_RECOVERY_ON_STARTUP", False)
     store = durability_store()
     registry = RunRegistry(max_concurrent_runs=10, durability_store=store)
     monkeypatch.setattr(app_module, "registry", registry)
@@ -1687,7 +1683,6 @@ async def test_cancel_run_persists_active_runs_as_cancelling(monkeypatch):
 
 def test_start_run_returns_expected_status_for_replays(monkeypatch):
     monkeypatch.setattr(settings, "EXECUTION_ENGINE_DISPATCH_TOKEN", "test-dispatch-token")
-    monkeypatch.setattr(settings, "STALE_ACTIVE_RUN_RECOVERY_ON_STARTUP", False)
     registry = RunRegistry(max_concurrent_runs=10, durability_store=durability_store())
     monkeypatch.setattr(app_module, "registry", registry)
 
@@ -1737,7 +1732,6 @@ def test_start_run_returns_expected_status_for_replays(monkeypatch):
 
 def test_start_run_returns_429_when_queue_is_full(monkeypatch):
     monkeypatch.setattr(settings, "EXECUTION_ENGINE_DISPATCH_TOKEN", "test-dispatch-token")
-    monkeypatch.setattr(settings, "STALE_ACTIVE_RUN_RECOVERY_ON_STARTUP", False)
     registry = RunRegistry(max_concurrent_runs=10, durability_store=durability_store())
     registry.enqueue = AsyncMock(return_value=False)
     monkeypatch.setattr(app_module, "registry", registry)

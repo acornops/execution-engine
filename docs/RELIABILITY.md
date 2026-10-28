@@ -41,7 +41,7 @@
 - Capture new runtime invariants in docs or checks when they become durable.
 - Event delivery uses Redis-backed outbox state at `REDIS_URL`; events are marked delivered only after the control plane acknowledges them.
 - Terminal commits are persisted before delivery and retried until the control plane acknowledges them or the `TERMINAL_COMMIT_RETENTION_SECONDS` retention window expires.
-- Startup recovery marks persisted queued/running/cancelling runs failed with `EXECUTION_ENGINE_RESTARTED`; runs already persisted as `waiting_for_approval` are owned by the control-plane continuation and are not stale active execution.
+- Background recovery marks unlocked persisted running/cancelling runs failed with `EXECUTION_ENGINE_RESTARTED`; queued runs are refilled, while runs already persisted as `waiting_for_approval` are owned by the control-plane continuation and are not stale active execution.
 - Write approval resume always bootstraps fresh credentials and revalidates the pending tool against the current allowed tool catalog before execution.
 - Write approval resume seeds event sequencing from the control-plane replay cursor and preserves any higher Redis outbox cursor before emitting resumed approval or tool-result events.
 - Every validated dispatch, including approval resume, emits `run_started` before
@@ -60,8 +60,8 @@
 
 ## Health And Readiness
 
-- `GET /health` is liveness only and should stay shallow.
-- `GET /ready` is the traffic-gating endpoint. It checks control-plane reachability, Redis when configured or required, and llm-gateway reachability when `EXECUTION_GATEWAY_BASE_URL` is configured.
+- `GET /health` checks local initialization and essential loop survival only. Dependency failures do not fail liveness.
+- `GET /ready` additionally requires successful local initialization and live essential loops. It is the traffic-gating endpoint. It checks control-plane reachability, Redis when configured or required, and llm-gateway reachability when `EXECUTION_GATEWAY_BASE_URL` is configured.
 - `acornops-deployment` should wire load balancers, Compose healthchecks, and Kubernetes readiness probes to `/ready`; deployment topology does not live in this repo.
 
 ## Starter Alerts

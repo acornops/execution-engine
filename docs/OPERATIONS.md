@@ -36,6 +36,34 @@ Optional tuning:
 - `TERMINAL_COMMIT_RETENTION_SECONDS`
 - `TERMINAL_COMMIT_RETRY_INTERVAL_SECONDS`
 
+## Recovery and probes
+
+Historical replay runs in the background and cannot prevent the API listener
+from starting. Per-run failures retain their durable records and allow other
+runs to progress. Commit delivery waits for the run's pending events. Existing
+terminal-commit retention still applies; permanent 404/authority errors require
+operator investigation rather than automatic deletion or re-execution.
+
+`STALE_ACTIVE_RUN_RECOVERY_ON_STARTUP` has been removed. Remove it from local
+`.env` files and platform overrides; recovery is always enabled.
+`TERMINAL_COMMIT_RETRY_INTERVAL_SECONDS` (default 5) is the delay between recovery
+passes. `ORCH_RETRY_MAX_ELAPSED_SECONDS` (default 30) bounds a background delivery
+operation and the existing control-plane retry policy. A later pass retries
+retained work after this budget is exhausted; there is no maximum lifetime
+attempt count. Large backlogs may take multiple passes to drain.
+
+`/health` fails when initialization or an essential engine loop is unavailable;
+`/ready` additionally requires healthy dependencies. With internal TLS, both
+HTTP probes also require the business listener to have started. Either listener
+exiting unexpectedly terminates the process with a failure status. Normal
+SIGTERM/SIGINT closes both listeners gracefully, with a 30-second shutdown bound.
+Redis connections use `READINESS_CHECK_TIMEOUT_MS` for socket connect/read
+limits as well as the readiness deadline.
+
+Run `task recovery-integration` for local TLS/plaintext process tests. Set
+`ACORNOPS_RECOVERY_REDIS_URL` to an isolated Redis to include the two-replica
+claim test; it uses a unique key prefix and deletes only its own test records.
+
 ## Key Metrics
 
 - `execution_engine_readiness_dependency_status`

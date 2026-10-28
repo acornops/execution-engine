@@ -8,9 +8,13 @@ from datetime import UTC, datetime
 from typing import Iterable, Protocol
 
 from redis import Redis
+from redis.backoff import NoBackoff
+from redis.retry import Retry
 
+from execution_engine.config import settings
 from execution_engine.models import CommitRequest, Event
 from execution_engine.outbound_tls import redis_tls_kwargs
+from execution_engine.util.logging import logger
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 ACTIVE_STATUSES = {"queued", "running", "cancelling"}
@@ -147,6 +151,9 @@ class DurabilityStore:
         self.redis: RedisLike = client or Redis.from_url(
             redis_url,
             decode_responses=True,
+            socket_connect_timeout=max(settings.READINESS_CHECK_TIMEOUT_MS / 1000, 0.001),
+            socket_timeout=max(settings.READINESS_CHECK_TIMEOUT_MS / 1000, 0.001),
+            retry=Retry(NoBackoff(), 0),
             **redis_tls_kwargs(redis_url),
         )
 
@@ -188,6 +195,11 @@ class DurabilityStore:
         raw = self.redis.hget(self._run_states_key, run_id)
         if not raw:
             return None
+        return self._parse_run(raw)
+
+    @staticmethod
+    def _parse_run(raw: str) -> PersistedRun:
+        """Decode one record without adding another Redis round trip during scans."""
         value = json.loads(raw)
         return PersistedRun(
             workspace_id=value["workspace_id"],
@@ -357,57 +369,44 @@ class DurabilityStore:
     def iter_queued_runs(self):
         """Scan recoverable queue candidates without loading the full Redis hash."""
         for run_id, raw in self.redis.hscan_iter(self._run_states_key, count=100):
-            value = json.loads(raw)
-            status = value.get("status")
-            if status != "queued" and not (status in {"waiting_for_approval", "waiting_for_dependencies"}
-                                            and self.resume_requested(run_id)):
-                continue
-            persisted = self.get_run(run_id)
-            if persisted and (persisted.status == "queued" or (
-                persisted.status in {"waiting_for_approval", "waiting_for_dependencies"}
-                and self.resume_requested(run_id)
-            )):
-                yield persisted
+            try:
+                value = json.loads(raw)
+                status = value.get("status")
+                if status != "queued" and not (status in {"waiting_for_approval", "waiting_for_dependencies"}
+                                                and self.resume_requested(run_id)):
+                    continue
+                persisted = self.get_run(run_id)
+                if persisted and (persisted.status == "queued" or (
+                    persisted.status in {"waiting_for_approval", "waiting_for_dependencies"}
+                    and self.resume_requested(run_id)
+                )):
+                    yield persisted
+            except (ValueError, TypeError, KeyError, AttributeError):
+                logger.warning(f"Invalid durable run {run_id}; record retained for inspection")
 
     def list_active_runs(self) -> list[PersistedRun]:
         """List recoverable runs that have not reached a terminal status."""
         runs: list[PersistedRun] = []
-        for raw in self.redis.hgetall(self._run_states_key).values():
-            value = json.loads(raw)
-            if value.get("status") not in ACTIVE_STATUSES:
-                continue
-            runs.append(
-                PersistedRun(
-                    workspace_id=value["workspace_id"],
-                    target_id=value.get("target_id"),
-                    target_type=value.get("target_type"),
-                    session_id=value["session_id"],
-                    run_id=value["run_id"],
-                    message_id=value["message_id"],
-                    scope_type=value.get("scope_type", "target"),
-                    workflow_id=value.get("workflow_id"),
-                    execution_id=value.get("execution_id"),
-                    workflow_session_id=value.get("workflow_session_id"),
-                    executor_role=value.get("executor_role"),
-                    parent_run_id=value.get("parent_run_id"),
-                    agent_id=value.get("agent_id"),
-                    trigger_id=value.get("trigger_id"),
-                    status=value["status"],
-                    created_at=_parse_iso(value.get("created_at")) or datetime.now(UTC),
-                    started_at=_parse_iso(value.get("started_at")),
-                    ended_at=_parse_iso(value.get("ended_at")),
-                )
-            )
+        for run_id, raw in self.redis.hgetall(self._run_states_key).items():
+            try:
+                persisted = self._parse_run(raw)
+                if persisted and persisted.status in ACTIVE_STATUSES:
+                    runs.append(persisted)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                logger.warning(f"Invalid durable run {run_id}; record retained for inspection")
         return sorted(runs, key=lambda run: run.created_at)
 
     def cleanup_terminal_runs(self, cutoff: datetime) -> int:
         """Remove terminal run records older than the cutoff."""
         removed = 0
         for run_id, raw in self.redis.hgetall(self._run_states_key).items():
-            value = json.loads(raw)
-            ended_at = _parse_iso(value.get("ended_at"))
-            if value.get("status") in TERMINAL_STATUSES and ended_at and ended_at < cutoff:
-                removed += self.redis.hdel(self._run_states_key, run_id)
+            try:
+                value = json.loads(raw)
+                ended_at = _parse_iso(value.get("ended_at"))
+                if value.get("status") in TERMINAL_STATUSES and ended_at and ended_at < cutoff:
+                    removed += self.redis.hdel(self._run_states_key, run_id)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                logger.warning(f"Invalid durable run {run_id}; record retained for inspection")
         return removed
 
     def upsert_event(self, event: Event) -> None:
@@ -435,6 +434,12 @@ class DurabilityStore:
     def list_pending_run_ids(self) -> list[str]:
         """List run IDs with pending durable events."""
         return sorted(self.redis.smembers(self._pending_runs_key))
+
+    def last_pending_event(self, run_id: str) -> Event | None:
+        """Read the last persisted event when resuming partially prepared recovery."""
+        seq = self.next_event_seq(run_id) - 1
+        raw = self.redis.hget(self._event_hash_key(run_id), str(seq))
+        return Event.model_validate_json(raw) if raw else None
 
     def mark_events_delivered(self, run_id: str, seqs: Iterable[int]) -> None:
         """Remove delivered events from the durable outbox."""
@@ -478,29 +483,33 @@ class DurabilityStore:
         self,
         limit: int,
         retention_seconds: int | None = None,
+        offset: int = 0,
     ) -> list[PendingTerminalCommit]:
         """Lists pending terminal commits, optionally dropping expired entries."""
         pending: list[PendingTerminalCommit] = []
         now = datetime.now(UTC)
-        for run_id in self.redis.zrange(self._terminal_pending_key, 0, max(limit - 1, 0)):
+        for run_id in self.redis.zrange(self._terminal_pending_key, offset, offset + max(limit - 1, 0)):
             raw = self.redis.hget(self._terminal_commits_key, run_id)
             if raw is None:
                 self.redis.zrem(self._terminal_pending_key, run_id)
                 continue
-            value = json.loads(raw)
-            created_at = _parse_iso(value.get("created_at")) or now
-            if retention_seconds is not None and (now - created_at).total_seconds() > retention_seconds:
-                self.mark_terminal_commit_delivered(run_id)
-                continue
-            pending.append(
-                PendingTerminalCommit(
-                    run_id=run_id,
-                    commit=CommitRequest.model_validate(value["commit"]),
-                    created_at=created_at,
-                    attempts=int(value.get("attempts") or 0),
-                    last_attempt_at=_parse_iso(value.get("last_attempt_at")),
+            try:
+                value = json.loads(raw)
+                created_at = _parse_iso(value.get("created_at")) or now
+                if retention_seconds is not None and (now - created_at).total_seconds() > retention_seconds:
+                    self.mark_terminal_commit_delivered(run_id)
+                    continue
+                pending.append(
+                    PendingTerminalCommit(
+                        run_id=run_id,
+                        commit=CommitRequest.model_validate(value["commit"]),
+                        created_at=created_at,
+                        attempts=int(value.get("attempts") or 0),
+                        last_attempt_at=_parse_iso(value.get("last_attempt_at")),
+                    )
                 )
-            )
+            except (ValueError, TypeError, KeyError, AttributeError):
+                logger.warning(f"Invalid terminal commit for run {run_id}; record retained for inspection")
         return pending
 
     def mark_terminal_commit_attempt(self, run_id: str) -> None:

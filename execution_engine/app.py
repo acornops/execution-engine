@@ -20,6 +20,7 @@ from execution_engine.models import RunRequest
 from execution_engine.orchestrator_client import OrchestratorClient
 from execution_engine.readiness import collect_readiness
 from execution_engine.run_registry import RunRegistry, RunStatus
+from execution_engine.runtime_state import runtime
 from execution_engine.util.logging import bind_log_context, logger, reset_log_context, setup_logging
 from execution_engine.util.metrics import cancel_requests_total, dispatch_requests_total, queued_runs
 from execution_engine.worker import Worker
@@ -54,35 +55,23 @@ async def lifespan(app: FastAPI):
     setup_logging()
     logger.info("Starting Execution Engine...")
 
-    if settings.STALE_ACTIVE_RUN_RECOVERY_ON_STARTUP:
-        try:
-            delivered = await registry.flush_pending_events(orchestrator_client)
-            if delivered:
-                logger.warning(f"Delivered {delivered} pending outbox events")
-            committed = await registry.flush_pending_terminal_commits(orchestrator_client)
-            if committed:
-                logger.warning(f"Delivered {committed} pending terminal commits")
-            recovered = await registry.recover_stale_active_runs(orchestrator_client)
-            if recovered:
-                logger.warning(f"Recovered {recovered} stale active runs")
-        except Exception as exc:
-            logger.error(f"Failed to recover stale active runs: {exc}")
-            raise
-
-    # Start the worker loop in the background
-    worker_task = asyncio.create_task(worker.run_loop())
-    terminal_commit_task = asyncio.create_task(_terminal_commit_retry_loop())
-
-    yield
-
-    logger.info("Shutting down Execution Engine...")
-    for task in (worker_task, terminal_commit_task):
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-    await orchestrator_client.close()
+    runtime.started = False
+    runtime.tasks = ()
+    try:
+        runtime.tasks = (
+            asyncio.create_task(worker.run_loop()),
+            asyncio.create_task(_recovery_loop()),
+        )
+        runtime.started = True
+        yield
+    finally:
+        runtime.started = False
+        logger.info("Shutting down Execution Engine...")
+        for task in runtime.tasks:
+            task.cancel()
+        await asyncio.gather(*runtime.tasks, return_exceptions=True)
+        runtime.tasks = ()
+        await orchestrator_client.close()
 
 
 app = FastAPI(
@@ -121,16 +110,18 @@ async def request_context_middleware(request: Request, call_next):
         reset_log_context(token)
 
 
-async def _terminal_commit_retry_loop() -> None:
-    """Retries durable terminal commits until the control plane acknowledges them."""
+async def _recovery_loop() -> None:
+    """Reconcile durable work independently of API startup and live execution."""
     while True:
         try:
             registry.refill_queued_runs()
+            await registry.recover_stale_active_runs()
+            await registry.flush_pending_events(orchestrator_client)
             delivered = await registry.flush_pending_terminal_commits(orchestrator_client)
             if delivered:
                 logger.info(f"Delivered {delivered} pending terminal commits")
         except Exception:
-            logger.exception("Terminal commit retry loop failed")
+            logger.exception("Durable recovery pass failed; retrying on the next interval")
         await asyncio.sleep(max(settings.TERMINAL_COMMIT_RETRY_INTERVAL_SECONDS, 1))
 
 # Global instances
@@ -295,15 +286,20 @@ async def cancel_run(
     return Response(status_code=202)
 
 @app.get("/health")
-async def health() -> dict:
-    """Simple health check endpoint."""
-    return {"status": "ok", "version": APP_VERSION, "capacity_contract_version": 1,
-            "capacity_enabled": settings.WORKSPACE_CAPACITY_ENABLED}
+async def health() -> JSONResponse:
+    """Local liveness; downstream outages do not restart the process."""
+    return JSONResponse(status_code=200 if runtime.healthy else 503, content={
+        "status": "ok" if runtime.healthy else "not_ready", "version": APP_VERSION,
+        "capacity_contract_version": 1, "capacity_enabled": settings.WORKSPACE_CAPACITY_ENABLED,
+    })
 
 
 @app.get("/ready")
 async def ready() -> JSONResponse:
     """Readiness endpoint for traffic gating."""
+    if not runtime.healthy:
+        return JSONResponse(status_code=503, content={"status": "not_ready", "dependencies": [],
+                                                     "detail": "Service initialization or essential task unavailable"})
     is_ready, dependencies = await collect_readiness(orchestrator_client, durability_store)
     status_code = 200 if is_ready else 503
     return JSONResponse(
