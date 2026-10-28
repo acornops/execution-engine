@@ -174,6 +174,7 @@ class RunRegistry:
         """
         self.draining = False
         self._drain_release_ids: set[str] = set()
+        self._drain_release_task: asyncio.Task | None = None
         self.active_tasks: set[asyncio.Task] = set()
         self._runs: Dict[RunKey, RunState] = {}
         self._run_id_to_key: Dict[str, RunKey] = {}

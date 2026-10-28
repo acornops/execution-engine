@@ -79,9 +79,16 @@
 - Native first-signal drain stops dispatch, dequeue, refill, requeue and resume
   scheduling together. Queued status alone never proves that ownership can be
   released: an already scheduled task may not have entered its running state.
+- Queued and parked handoffs fence stale local references after their scheduled
+  finalizer completes. One tracked release task performs Redis calls off the event
+  loop, retains uncertain releases for retry, and remains attached to in-flight
+  calls through deadline cancellation.
 - Lease renewal, durable cancellation observation, event delivery and finalizers
   continue during drain. Finalizers remain attached to their executing task even
   when deadline cancellation arrives while a terminal commit is in progress.
 - Pending gateway stream reads are cancelled and awaited with their parent run;
   they cannot outlive dependency teardown. Trusted pre-admission errors are the
   only gateway POST replay permission.
+- The native watchdog remains armed through asynchronous runner and executor
+  teardown; completion of listener tasks alone cannot disarm the process bound.
+  Embedded callers release their watchdog when their own supervised work settles.

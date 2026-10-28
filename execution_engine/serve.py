@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import ExitStack
 
 import uvicorn
 from fastapi import FastAPI
@@ -40,7 +41,7 @@ async def probe_ready():
     return response if servers and servers.serving else unavailable()
 
 
-async def main() -> None:
+async def main(process_lifetime: ExitStack | None = None) -> None:
     """Start the business server and optional TLS probe server."""
     setup_logging()
     logger.info(
@@ -67,6 +68,8 @@ async def main() -> None:
         begin_drain=lambda: application.registry.begin_drain(),
         work_tasks=lambda: application.registry.active_tasks,
     )
+    if process_lifetime is not None:
+        process_lifetime.enter_context(servers.process_lifetime())
     try:
         await servers.run()
     finally:
@@ -74,4 +77,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Executor threads can outlive all async tasks. Keep the process watchdog
+    # through asyncio.run's executor shutdown, then release it for clean exit.
+    with ExitStack() as process_lifetime:
+        asyncio.run(main(process_lifetime))

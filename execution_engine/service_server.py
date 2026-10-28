@@ -6,7 +6,7 @@ import signal
 import threading
 import time
 from collections.abc import Callable
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 
 import uvicorn
 
@@ -35,6 +35,18 @@ class ServiceServers:
         self.shutdown_timeout = min(shutdown_timeout, 20)
         self.stopping = False
         self._watchdog: threading.Timer | None = None
+        self._process_lifetime_owned = False
+
+    @contextmanager
+    def process_lifetime(self):
+        """Retain the watchdog until the caller's outer asyncio.run has returned."""
+        self._process_lifetime_owned = True
+        try:
+            yield
+        finally:
+            self._process_lifetime_owned = False
+            if self._watchdog:
+                self._watchdog.cancel()
 
     @property
     def serving(self) -> bool:
@@ -117,7 +129,8 @@ class ServiceServers:
                 for task in listeners:
                     if task.done() and not task.cancelled():
                         task.exception()
-                if not pending and not self._accepted_tasks() and self._watchdog:
+                if (not self._process_lifetime_owned and not pending
+                        and not self._accepted_tasks() and self._watchdog):
                     self._watchdog.cancel()
             finally:
                 for sig, handler in previous.items():

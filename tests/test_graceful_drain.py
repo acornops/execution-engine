@@ -41,6 +41,7 @@ async def test_drain_releases_every_unscheduled_claim_but_keeps_scheduled_queued
     assert await registry.dequeue() == "scheduled"
     registry.task_done()
     registry.begin_drain()
+    await asyncio.gather(*registry.active_tasks)
     assert registry.get_by_run_id("scheduled").status == RunStatus.QUEUED
     assert store.run_lock_owner("scheduled") == registry._owner_id
     assert store.run_lock_owner("queued") is None
@@ -55,12 +56,19 @@ async def test_drain_releases_every_unscheduled_claim_but_keeps_scheduled_queued
     assert registry.queue_size == 0
     assert store.run_lock_owner("scheduled") == registry._owner_id
     registry.execution_done("scheduled")
+    await asyncio.gather(*registry.active_tasks)
     assert store.run_lock_owner("scheduled") is None
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("parked", [RunStatus.WAITING_FOR_APPROVAL, RunStatus.WAITING_FOR_DEPENDENCIES])
-async def test_pending_resume_remains_durable_without_scheduling_after_drain(parked):
+@pytest.mark.parametrize("capacity_enabled", [False, True])
+async def test_pending_resume_handoff_cannot_overwrite_replacement(monkeypatch, parked, capacity_enabled):
+    from datetime import UTC, datetime
+
+    from execution_engine.config import settings
+
+    monkeypatch.setattr(settings, "WORKSPACE_CAPACITY_ENABLED", capacity_enabled)
     store = durability_store()
     registry = RunRegistry(1, store)
     state, _ = await registry.get_or_create("w", "t", "kubernetes", "s", "r", "m")
@@ -71,6 +79,7 @@ async def test_pending_resume_remains_durable_without_scheduling_after_drain(par
     registry.persist_state(state)
     await registry.resume(state)
     registry.begin_drain()
+    assert registry.get_by_run_id("r") is state
     registry.execution_done("r")
     assert registry.queue_size == 0
     assert store.resume_requested("r")
@@ -78,6 +87,24 @@ async def test_pending_resume_remains_durable_without_scheduling_after_drain(par
     replacement = RunRegistry(1, store)
     replacement.refill_queued_runs()
     assert replacement._queued == {"r"}
+    assert await replacement.dequeue() == "r"
+    replacement.task_done()
+    current = replacement.get_by_run_id("r")
+    current.status = RunStatus.COMPLETED
+    current.ended_at = datetime.now(UTC)
+    replacement.persist_state(current)
+
+    monkeypatch.setattr(app_module, "registry", registry)
+    assert (await app_module.cancel_run("r")).status_code == 202
+    # A finalizer callback can already hold the old reference after handoff.
+    state.status = RunStatus.CANCELLED
+    registry.persist_state(state)
+    persisted = store.get_run("r")
+    assert persisted.status == "completed"
+    assert persisted.ended_at == current.ended_at
+    assert not current.cancel_event.is_set()
+    assert registry.get_by_run_id("r") is None
+    await asyncio.gather(*registry.active_tasks)
 
 
 @pytest.mark.asyncio
@@ -334,14 +361,19 @@ async def test_late_direct_cancel_and_stale_reference_cannot_overwrite_replaceme
     await first.enqueue("handoff")
     original_release = store.release_run_lock
     attempts = []
+    attempted = asyncio.Event()
+    loop = asyncio.get_running_loop()
 
     def unreliable_release(run_id, owner):
         attempts.append((run_id, owner))
-        if len(attempts) == 1 and release_failure == "before_delete":
-            raise ConnectionError("request did not reach Redis")
-        original_release(run_id, owner)
-        if len(attempts) == 1 and release_failure == "after_delete":
-            raise ConnectionError("acknowledgement lost after Redis deleted the lock")
+        try:
+            if len(attempts) == 1 and release_failure == "before_delete":
+                raise ConnectionError("request did not reach Redis")
+            original_release(run_id, owner)
+            if len(attempts) == 1 and release_failure == "after_delete":
+                raise ConnectionError("acknowledgement lost after Redis deleted the lock")
+        finally:
+            loop.call_soon_threadsafe(attempted.set)
 
     monkeypatch.setattr(store, "release_run_lock", unreliable_release)
     monkeypatch.setattr(app_module, "registry", first)
@@ -357,15 +389,17 @@ async def test_late_direct_cancel_and_stale_reference_cannot_overwrite_replaceme
     stale.status = RunStatus.CANCELLED
     first.persist_state(stale)
     assert store.get_run("handoff").status == "queued"
+    await asyncio.wait_for(attempted.wait(), 1)
     if release_failure == "before_delete":
         assert store.run_lock_owner("handoff") == first._owner_id
-        first.release_unscheduled_claims()
+        await asyncio.gather(*first.active_tasks)
     second.refill_queued_runs()
     current = second.get_by_run_id("handoff")
     assert current is not None
     assert store.run_lock_owner("handoff") == second._owner_id
     # Retrying an uncertain release must still be fenced to the previous owner.
     first.release_unscheduled_claims()
+    await asyncio.gather(*first.active_tasks)
     assert store.run_lock_owner("handoff") == second._owner_id
     assert await second.dequeue() == "handoff"
     second.task_done()
@@ -403,3 +437,126 @@ async def test_direct_cancel_still_reaches_scheduled_owner_during_drain(monkeypa
     assert not state.execution_lock_lost
     assert registry.get_by_run_id("owned") is state
     assert registry.durability_store.get_run("owned").status in {"cancelled", "cancelling"}
+
+
+@pytest.mark.asyncio
+async def test_slow_claim_release_cannot_block_active_lease_renewal(monkeypatch):
+    import threading
+    import time
+
+    from execution_engine.capacity import Authority, _renew
+
+    store = durability_store()
+    registry = RunRegistry(1, store)
+    for run_id in ("active", "queued"):
+        await registry.get_or_create("w", "t", "kubernetes", "s", run_id, "m")
+        await registry.enqueue(run_id)
+    assert await registry.dequeue() == "active"
+    registry.task_done()
+    release_allowed = threading.Event()
+    release_finished = threading.Event()
+    renewed = asyncio.Event()
+    original_release = store.release_run_lock
+
+    def slow_release(*args):
+        try:
+            release_allowed.wait(3)
+            return original_release(*args)
+        finally:
+            release_finished.set()
+
+    async def capacity(*args):
+        renewed.set()
+        return {"status": "ok", "contractVersion": 1, "leaseRemainingMs": 30000}
+
+    monkeypatch.setattr(store, "release_run_lock", slow_release)
+    execution = asyncio.create_task(asyncio.Event().wait())
+    authority = Authority("active", "owner", 1, deadline=time.monotonic() + 1)
+    renewal = asyncio.create_task(_renew(
+        SimpleNamespace(orchestrator_client=SimpleNamespace(capacity=capacity)),
+        registry.get_by_run_id("active"), authority, execution,
+    ))
+    try:
+        await asyncio.sleep(0)
+        registry.begin_drain()
+        await asyncio.wait_for(renewed.wait(), 2)
+        assert renewed.is_set() and not authority.lost
+        assert not execution.done()
+        assert not release_finished.is_set()
+        release_allowed.set()
+        await asyncio.gather(*registry.active_tasks)
+        assert store.run_lock_owner("queued") is None
+    finally:
+        release_allowed.set()
+        renewal.cancel()
+        execution.cancel()
+        await asyncio.gather(renewal, execution, *registry.active_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_queued_only_drain_keeps_release_retry_owned_until_settled(monkeypatch):
+    store = durability_store()
+    registry = RunRegistry(1, store)
+    await registry.get_or_create("w", "t", "kubernetes", "s", "queued", "m")
+    await registry.enqueue("queued")
+    original_release = store.release_run_lock
+    attempted = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    attempts = 0
+
+    def release(*args):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            loop.call_soon_threadsafe(attempted.set)
+            raise ConnectionError("release failed before deletion")
+        return original_release(*args)
+
+    monkeypatch.setattr(store, "release_run_lock", release)
+    registry.begin_drain()
+    await asyncio.wait_for(attempted.wait(), 1)
+    assert registry.active_tasks, "The supervisor must retain local pending handoff work"
+    await asyncio.wait_for(asyncio.gather(*registry.active_tasks), 3)
+    assert store.run_lock_owner("queued") is None
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("release_fails", [False, True])
+async def test_deadline_keeps_inflight_release_attached_without_restarting_retry(monkeypatch, release_fails):
+    import threading
+
+    store = durability_store()
+    registry = RunRegistry(1, store)
+    await registry.get_or_create("w", "t", "kubernetes", "s", "queued", "m")
+    await registry.enqueue("queued")
+    entered = asyncio.Event()
+    release_allowed = threading.Event()
+    loop = asyncio.get_running_loop()
+    original_release = store.release_run_lock
+
+    def release(*args):
+        loop.call_soon_threadsafe(entered.set)
+        release_allowed.wait(3)
+        if release_fails:
+            raise ConnectionError("release response lost")
+        return original_release(*args)
+
+    monkeypatch.setattr(store, "release_run_lock", release)
+    registry.begin_drain()
+    task = registry._drain_release_task
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel("drain deadline")
+        await asyncio.sleep(0)
+        assert not task.done(), "An in-flight Redis thread must stay attached during cleanup"
+        release_allowed.set()
+        await asyncio.gather(task, return_exceptions=True)
+        assert task.cancelled()
+        registry.release_unscheduled_claims()
+        assert not registry.active_tasks, "Recovery must not restart releases after deadline cancellation"
+    finally:
+        release_allowed.set()
+        for pending in tuple(registry.active_tasks):
+            pending.cancel()
+        await asyncio.gather(*registry.active_tasks, return_exceptions=True)

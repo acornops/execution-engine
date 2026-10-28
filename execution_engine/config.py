@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     EXECUTION_ENGINE_DISPATCH_TOKEN: str = DEFAULT_DISPATCH_TOKEN
     EXECUTION_GATEWAY_BASE_URL: str | None = None
     MAX_CONCURRENT_RUNS: int = 100
-    SERVICE_DRAIN_TIMEOUT_SECONDS: float = Field(default=870, gt=0)
+    SERVICE_DRAIN_TIMEOUT_SECONDS: float = Field(default=870, gt=0, allow_inf_nan=False)
     HTTP_PORT: int = 8080
     INTERNAL_TRANSPORT_TLS_ENABLED: bool = False
     INTERNAL_TRANSPORT_TLS_REQUIRE_CLIENT_CERT: bool = True

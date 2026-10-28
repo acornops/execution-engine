@@ -240,6 +240,7 @@ def test_native_durable_cancellation_reaches_owner_after_readiness_withdrawal(tm
 
 @pytest.mark.asyncio
 async def test_real_redis_drain_releases_only_unscheduled_and_preserves_replacement(monkeypatch, real_store):  # noqa: F811
+    import asyncio
     from datetime import UTC, datetime
 
     import execution_engine.app as app_module
@@ -253,9 +254,11 @@ async def test_real_redis_drain_releases_only_unscheduled_and_preserves_replacem
     first.task_done()
     stale = first.get_by_run_id("queued")
     first.begin_drain()
+    await asyncio.gather(*first.active_tasks)
     second.refill_queued_runs()
     assert second._queued == {"queued"}
     first.release_unscheduled_claims()
+    await asyncio.gather(*first.active_tasks)
     assert real_store.run_lock_owner("queued") == second._owner_id
     assert real_store.run_lock_owner("active") == first._owner_id
     current = second.get_by_run_id("queued")
@@ -305,3 +308,83 @@ async def test_real_redis_drain_retains_and_renews_scheduled_owner(monkeypatch, 
         renewal.cancel()
         worker.cancel()
         await asyncio.gather(renewal, worker, return_exceptions=True)
+
+
+WATCHDOG_PROCESS = """
+import asyncio, importlib, os, runpy, threading, time
+from pathlib import Path
+import uvicorn
+from execution_engine.service_server import ServiceServers
+
+original_init = ServiceServers.__init__
+def short_reserve(self, configs, **kwargs):
+    kwargs.update(healthy=lambda: True, shutdown_timeout=0.3)
+    original_init(self, configs, **kwargs)
+ServiceServers.__init__ = short_reserve
+root = Path(os.environ['WATCHDOG_TEST_ROOT'])
+mode = os.environ['WATCHDOG_TEST_MODE']
+
+class Listener:
+    def __init__(self, config):
+        self.config, self.started, self.should_exit = config, False, False
+    async def serve(self):
+        if mode == 'lingering_thread':
+            entered = threading.Event()
+            def dependency_call():
+                entered.set()
+                time.sleep(1.5)
+            asyncio.create_task(asyncio.to_thread(dependency_call))
+            while not entered.is_set():
+                await asyncio.sleep(0.001)
+        self.started = True
+        (root / 'listener_ready').touch()
+        while not self.should_exit:
+            await asyncio.sleep(0.001)
+        (root / 'listener_closed').touch()
+
+uvicorn.Server = Listener
+if mode == 'embedded':
+    launcher = importlib.import_module('execution_engine.serve')
+    asyncio.run(launcher.main())
+    time.sleep(0.6)
+    (root / 'embedding_survived').touch()
+else:
+    runpy.run_module('execution_engine.serve', run_name='__main__')
+"""
+
+
+@pytest.mark.parametrize("mode", ["lingering_thread", "healthy", "embedded"])
+def test_native_watchdog_covers_executor_teardown_without_delaying_clean_exit(tmp_path, mode):
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(ROOT),
+        "APP_ENV": "development",
+        "REDIS_URL": "",
+        "INTERNAL_TRANSPORT_TLS_ENABLED": "false",
+        "WORKSPACE_CAPACITY_ENABLED": "false",
+        "SERVICE_DRAIN_TIMEOUT_SECONDS": "0.2",
+        "WATCHDOG_TEST_ROOT": str(tmp_path),
+        "WATCHDOG_TEST_MODE": mode,
+    }
+    with (tmp_path / "watchdog.log").open("w") as log:
+        child = subprocess.Popen(
+            [sys.executable, "-c", WATCHDOG_PROCESS], cwd=ROOT, env=env, stdout=log, stderr=log
+        )
+        try:
+            wait_until(lambda: (tmp_path / "listener_ready").exists())
+            started = time.monotonic()
+            child.send_signal(signal.SIGTERM)
+            exit_code = child.wait(timeout=3)
+            elapsed = time.monotonic() - started
+            assert (tmp_path / "listener_closed").exists()
+            assert exit_code == (1 if mode == "lingering_thread" else 0), (
+                tmp_path / "watchdog.log"
+            ).read_text()
+            if mode == "embedded":
+                assert (tmp_path / "embedding_survived").exists()
+            else:
+                assert elapsed < 0.9, "Process exceeded the first-signal drain and cleanup bound"
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=3)

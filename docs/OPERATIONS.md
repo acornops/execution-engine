@@ -70,17 +70,21 @@ SIGTERM/SIGINT closes dispatch admission and every scheduling path on the event
 loop. `/ready` immediately returns 503; `/health` stays live while essential
 workers and listeners remain healthy. The default `SERVICE_DRAIN_TIMEOUT_SECONDS`
 is 870. The first signal sets one monotonic deadline; repeated signals do not
-change it. Accepted tasks finish normally, including their finalizers. Queued
-claims with no scheduled task are fenced and removed from the local cancellation
-cache before release, so late callbacks cannot overwrite a replacement. Uncertain
-releases retain separate retry IDs and remain conditional on the old Redis owner.
-Scheduled tasks still marked
+change it. Accepted tasks finish normally, including their finalizers. Queued and
+parked claims with no scheduled task are fenced and removed from the local
+cancellation cache before release, so late callbacks cannot overwrite a replacement.
+A tracked cleanup task releases claims off the event loop and retries uncertain
+releases within the drain window, conditional on the old Redis owner. Slow Redis
+calls cannot starve active lease renewal, and their threads remain attached through
+deadline cancellation. Scheduled tasks still marked
 `queued` retain ownership until they settle. Approval/dependency continuations
 remain durable for another replica rather than occupying this shutdown window.
 
 At the deadline, accepted execution is cancelled before listener/lifespan teardown.
 Finalizers, lease release and dependencies have at most 20 additional seconds.
-A process watchdog enforces the bound even if a task suppresses cancellation.
+A process watchdog enforces the bound even if a task suppresses cancellation or
+an executor thread survives its cancelled caller. The native launcher retains the
+watchdog until the outer asynchronous runner has finished executor teardown.
 The process exits early after its own accepted work finishes; it does not wait
 for a global outbox to empty. Deploy with a 900-second termination grace and
 `maxUnavailable: 0`, `maxSurge: 1`, `minReadySeconds: 5`. Terminating pods overlap

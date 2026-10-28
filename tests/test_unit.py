@@ -342,6 +342,12 @@ async def test_run_registry_persists_agent_chat_identity_without_workflow_fields
     assert persisted.target_id is None
 
 
+@pytest.mark.parametrize("timeout", [0, -1, "inf", "-inf", "NaN"])
+def test_drain_timeout_must_be_finite_and_positive(timeout):
+    with pytest.raises(ValidationError, match="SERVICE_DRAIN_TIMEOUT_SECONDS"):
+        Settings(SERVICE_DRAIN_TIMEOUT_SECONDS=timeout)
+
+
 def test_production_config_rejects_default_tokens_and_redis():
     with pytest.raises(ValueError, match="ORCH_SERVICE_TOKEN"):
         Settings(
