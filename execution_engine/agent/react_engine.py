@@ -3,7 +3,6 @@
 import asyncio
 import json
 import time
-from contextlib import suppress
 from typing import Any, AsyncGenerator, AsyncIterator, Dict, List
 
 from execution_engine.agent.assistant_reference_context import preload_referenced_skills
@@ -90,27 +89,28 @@ class ReActAgentEngine(AgentEngine):
         cancel_event: asyncio.Event,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         iterator = chunks.__aiter__()
-        while not cancel_event.is_set():
-            next_chunk = asyncio.create_task(anext(iterator))
-            cancel_wait = asyncio.create_task(cancel_event.wait())
-            done, pending = await asyncio.wait(
-                {next_chunk, cancel_wait},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-            if cancel_wait in done:
-                next_chunk.cancel()
-                with suppress(asyncio.CancelledError, StopAsyncIteration):
-                    await next_chunk
-                break
-            cancel_wait.cancel()
-            with suppress(asyncio.CancelledError):
-                await cancel_wait
-            try:
-                yield next_chunk.result()
-            except StopAsyncIteration:
-                break
+        try:
+            while not cancel_event.is_set():
+                next_chunk = asyncio.create_task(anext(iterator))
+                cancel_wait = asyncio.create_task(cancel_event.wait())
+                try:
+                    done, _ = await asyncio.wait({next_chunk, cancel_wait}, return_when=asyncio.FIRST_COMPLETED)
+                    if cancel_wait in done:
+                        break
+                    try:
+                        chunk = next_chunk.result()
+                    except StopAsyncIteration:
+                        break
+                finally:
+                    # Await outstanding reads before their run and dependencies close.
+                    for task in (next_chunk, cancel_wait):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(next_chunk, cancel_wait, return_exceptions=True)
+                yield chunk
+        finally:
+            if hasattr(iterator, "aclose"):
+                await iterator.aclose()
 
     @staticmethod
     def _tool_call_signature(tool_name: str, arguments: Dict[str, Any]) -> str:

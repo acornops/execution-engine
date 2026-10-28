@@ -42,3 +42,5 @@ This `docs/` tree is the repository-local system of record for agent-readable de
 - [Generated Artifacts](/docs/generated/README.md)
 
 - [Workspace execution authority plan](exec-plans/completed/workspace-execution-authority.md)
+
+- [Graceful rolling restart plan](exec-plans/active/2026-10-29-graceful-rolling-restarts.md)

@@ -1,9 +1,10 @@
 """Bounded local scheduling backed by durable queued and resume intent."""
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from execution_engine.config import settings
+from execution_engine.durability import TERMINAL_STATUSES
 
 
 def enqueue_run(registry, run_id: str) -> bool:
@@ -16,6 +17,8 @@ def enqueue_run(registry, run_id: str) -> bool:
     Returns:
         True if enqueued successfully, False if the queue is full.
     """
+    if registry.draining:
+        return False
     if registry.durability_store and not settings.WORKSPACE_CAPACITY_ENABLED:
         owner = registry.durability_store.run_lock_owner(run_id)
         if owner is None and registry.durability_store.acquire_run_lock(
@@ -44,6 +47,8 @@ def resume_run(registry, state) -> bool:
     """Retain resume intent without changing the currently unwinding park status."""
     from execution_engine.run_registry import RunStatus
 
+    if registry.draining:
+        return False
     state.resume_requested_at = state.resume_requested_at or datetime.now(UTC)
     if registry.durability_store:
         registry.durability_store.request_resume(state.run_id)
@@ -60,6 +65,10 @@ def finish_execution(registry, run_id: str) -> None:
     from execution_engine.run_registry import RunStatus
 
     registry._scheduled.discard(run_id)
+    if registry.draining:
+        registry._pending_resumes.discard(run_id)
+        registry.release_unscheduled_claims()
+        return
     if run_id in registry._pending_resumes:
         registry._pending_resumes.discard(run_id)
         state = registry.get_by_run_id(run_id)
@@ -75,7 +84,7 @@ def refill_queued_runs(registry, exclude_run_id=None) -> int:
     from execution_engine.run_registry import RunStatus
 
     store = registry.durability_store
-    if store is None:
+    if registry.draining or store is None:
         return 0
     added = 0
     for persisted in store.iter_queued_runs():
@@ -96,3 +105,44 @@ def refill_queued_runs(registry, exclude_run_id=None) -> int:
         else:
             registry.forget_local_run(state.run_id)
     return added
+
+
+def state_from_persisted(persisted):
+    from execution_engine.run_registry import RunState, RunStatus
+
+    state = RunState(
+        persisted.workspace_id,
+        persisted.target_id,
+        persisted.target_type,
+        persisted.session_id,
+        persisted.run_id,
+        persisted.message_id,
+        scope_type=getattr(persisted, "scope_type", "target"),
+        workflow_id=getattr(persisted, "workflow_id", None),
+        execution_id=getattr(persisted, "execution_id", None),
+        workflow_session_id=getattr(persisted, "workflow_session_id", None),
+        executor_role=getattr(persisted, "executor_role", None),
+        parent_run_id=getattr(persisted, "parent_run_id", None),
+        agent_id=getattr(persisted, "agent_id", None),
+        trigger_id=getattr(persisted, "trigger_id", None),
+    )
+    state.status = RunStatus(persisted.status)
+    state.created_at = persisted.created_at
+    state.started_at = persisted.started_at
+    state.ended_at = persisted.ended_at
+    return state
+
+
+def cleanup_terminal_runs(registry, now: datetime | None = None) -> int:
+    """Removes terminal run entries past the configured TTL."""
+    cutoff = (now or datetime.now(UTC)) - timedelta(seconds=registry.terminal_run_ttl_seconds)
+    removed = 0
+    for key, state in list(registry._runs.items()):
+        if state.status.value in TERMINAL_STATUSES and state.ended_at and state.ended_at < cutoff:
+            registry._runs.pop(key, None)
+            registry._run_id_to_key.pop(state.run_id, None)
+            removed += 1
+
+    if registry.durability_store:
+        registry.durability_store.cleanup_terminal_runs(cutoff)
+    return removed

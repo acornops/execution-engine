@@ -1,6 +1,7 @@
 """Task-local execution authority, renewed independently from the worker semaphore."""
 
 import asyncio
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -8,6 +9,7 @@ from datetime import UTC, datetime
 import httpx
 
 from execution_engine.config import settings
+from execution_engine.drain import finish_cleanup
 from execution_engine.util.logging import logger
 
 
@@ -17,6 +19,7 @@ class Authority:
     owner_id: str
     generation: int
     lost: bool = False
+    deadline: float | None = None
 
     def headers(self):
         return {"x-acornops-execution-owner": self.owner_id, "x-acornops-execution-generation": str(self.generation)}
@@ -30,20 +33,54 @@ async def authority_request_hook(request):
     authority = current_authority.get()
     if authority:
         cleanup = any(part in request.url.path for part in ("/events", "/commit", "/operations/finish", "/release"))
+        if authority.deadline is not None and time.monotonic() >= authority.deadline:
+            authority.lost = True
         if authority.lost and not cleanup:
             raise RuntimeError("Execution authority lost")
         request.headers.update(authority.headers())
 
 
+def lease_deadline(result: dict, request_started: float) -> float | None:
+    """Never give network time back to a PostgreSQL-confirmed remaining lease."""
+    if "leaseRemainingMs" not in result:
+        return None
+    remaining = result["leaseRemainingMs"]
+    if type(remaining) is not int or remaining <= 0:
+        raise RuntimeError("Invalid remaining execution lease")
+    deadline = request_started + remaining / 1000
+    if deadline <= time.monotonic():
+        raise RuntimeError("Execution lease expired before response arrived")
+    return deadline
+
+
 async def _renew(worker, state, authority, task):
     try:
         while True:
-            await asyncio.sleep(10)
-            result = await worker.orchestrator_client.capacity(
-                state.run_id, "renew", {"ownerId": authority.owner_id, "generation": authority.generation}
-            )
-            if result.get("status") != "ok" or result.get("contractVersion") != 1:
+            remaining = None if authority.deadline is None else authority.deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise RuntimeError("Execution authority expired")
+            await asyncio.sleep(10 if remaining is None else min(10, max(remaining / 3, .01)))
+            started = time.monotonic()
+            remaining = None if authority.deadline is None else authority.deadline - started
+            if remaining is not None and remaining <= 0:
+                raise RuntimeError("Execution authority expired")
+            try:
+                async with asyncio.timeout(remaining):
+                    result = await worker.orchestrator_client.capacity(
+                        state.run_id, "renew", {"ownerId": authority.owner_id, "generation": authority.generation}
+                    )
+            except (httpx.HTTPError, TimeoutError) as error:
+                transient = not isinstance(error, httpx.HTTPStatusError) or error.response.status_code >= 500
+                if not transient or authority.deadline is None or time.monotonic() >= authority.deadline:
+                    raise
+                continue
+            if (not isinstance(result, dict) or result.get("status") != "ok"
+                    or type(result.get("contractVersion")) is not int or result["contractVersion"] != 1):
                 raise RuntimeError("Execution authority renewal rejected")
+            deadline = lease_deadline(result, started)
+            if authority.deadline is not None and deadline is None:
+                raise RuntimeError("Confirmed lease metadata disappeared")
+            authority.deadline = deadline
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -59,6 +96,7 @@ async def execute_with_capacity(worker, state):
     owner = state.capacity_owner_id
     queued_since = state.resume_requested_at or state.created_at
     try:
+        request_started = time.monotonic()
         grant = await worker.orchestrator_client.capacity(state.run_id, "acquire", {"ownerId": owner})
         if (not isinstance(grant, dict) or type(grant.get("contractVersion")) is not int
                 or grant["contractVersion"] != 1):
@@ -88,6 +126,7 @@ async def execute_with_capacity(worker, state):
         elif (grant.get("status") != "granted" or type(grant.get("generation")) is not int
                 or grant["generation"] < 1):
             raise RuntimeError("Execution capacity denied")
+        deadline = lease_deadline(grant, request_started) if capacity_enabled else None
     except httpx.HTTPError as error:
         transient = not isinstance(error, httpx.HTTPStatusError) or error.response.status_code >= 500
         if transient and (datetime.now(UTC) - queued_since).total_seconds() <= 600:
@@ -108,7 +147,7 @@ async def execute_with_capacity(worker, state):
         async with worker._semaphore:
             await worker._do_execute_run(state)
         return
-    authority = Authority(state.run_id, owner, grant["generation"])
+    authority = Authority(state.run_id, owner, grant["generation"], deadline=deadline)
     worker.registry.save_authority(authority)
     token = current_authority.set(authority)
     renewal = asyncio.create_task(_renew(worker, state, authority, asyncio.current_task()))
@@ -116,22 +155,27 @@ async def execute_with_capacity(worker, state):
         async with worker._semaphore:
             await worker._do_execute_run(state)
     finally:
-        renewal.cancel()
-        await asyncio.gather(renewal, return_exceptions=True)
         try:
-            parked = not authority.lost and state.status in {
-                RunStatus.WAITING_FOR_APPROVAL,
-                RunStatus.WAITING_FOR_DEPENDENCIES,
-            }
-            await worker.orchestrator_client.capacity(
-                state.run_id,
-                "release",
-                {"ownerId": owner, "generation": authority.generation, "state": "parked" if parked else "settling"},
-            )
-        except Exception:
-            logger.warning("Capacity release failed; lease expiry will fence run %s", state.run_id)
+            await finish_cleanup(_release_capacity(worker, state, authority, renewal))
         finally:
             current_authority.reset(token)
+
+
+async def _release_capacity(worker, state, authority, renewal):
+    from execution_engine.run_registry import RunStatus
+
+    renewal.cancel()
+    await asyncio.gather(renewal, return_exceptions=True)
+    try:
+        parked = not authority.lost and state.status in {
+            RunStatus.WAITING_FOR_APPROVAL, RunStatus.WAITING_FOR_DEPENDENCIES,
+        }
+        await worker.orchestrator_client.capacity(
+            state.run_id, "release", {"ownerId": authority.owner_id, "generation": authority.generation,
+                                      "state": "parked" if parked else "settling"},
+        )
+    except Exception:
+        logger.warning("Capacity release failed; lease expiry will fence run %s", state.run_id)
 
 
 async def run_worker_loop(worker):
@@ -151,6 +195,8 @@ async def run_worker_loop(worker):
             if state:
                 state.task = asyncio.create_task(worker.execute_run(state))
                 tasks.add(state.task)
+                worker.registry.active_tasks.add(state.task)
+                state.task.add_done_callback(worker.registry.active_tasks.discard)
             worker.registry.task_done()
             queued_runs.set(worker.registry.queue_size)
             worker.registry.cleanup_terminal_runs()

@@ -13,14 +13,16 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Path, Request, Resp
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from execution_engine.cancellation import cancellation_loop
 from execution_engine.config import settings
+from execution_engine.drain import DrainMiddleware, draining_response, service_drain
 from execution_engine.durability import DurabilityStore
 from execution_engine.examples import EXAMPLE_RUN_ID
 from execution_engine.models import RunRequest
 from execution_engine.orchestrator_client import OrchestratorClient
 from execution_engine.readiness import collect_readiness
 from execution_engine.run_leases import maintain_run_locks
-from execution_engine.run_registry import RunRegistry, RunStatus
+from execution_engine.run_registry import RunRegistry, RunStatus, ServiceDraining
 from execution_engine.runtime_state import runtime
 from execution_engine.util.logging import bind_log_context, logger, reset_log_context, setup_logging
 from execution_engine.util.metrics import cancel_requests_total, dispatch_requests_total, queued_runs
@@ -60,7 +62,8 @@ async def lifespan(app: FastAPI):
     runtime.tasks = ()
     try:
         worker_task = asyncio.create_task(worker.run_loop())
-        tasks = [worker_task, asyncio.create_task(_recovery_loop())]
+        tasks = [worker_task, asyncio.create_task(_recovery_loop()),
+                 asyncio.create_task(cancellation_loop(registry, orchestrator_client))]
         if registry.durability_store and not settings.WORKSPACE_CAPACITY_ENABLED:
             tasks.append(asyncio.create_task(maintain_run_locks(registry, worker_task)))
         runtime.tasks = tuple(tasks)
@@ -116,6 +119,8 @@ async def _recovery_loop() -> None:
     """Reconcile durable work independently of API startup and live execution."""
     while True:
         try:
+            if registry.draining:
+                registry.release_unscheduled_claims()
             registry.refill_queued_runs()
             await registry.recover_stale_active_runs()
             await registry.flush_pending_events(orchestrator_client)
@@ -212,6 +217,8 @@ async def start_run(request: RunRequest) -> Response:
             agent_id=request.agent_id,
             trigger_id=request.trigger_id,
         )
+    except ServiceDraining:
+        return draining_response()
     except ValueError as e:
         logger.warning(f"Conflict starting run {request.run_id}: {e}")
         dispatch_requests_total.labels(result="conflict").inc()
@@ -299,11 +306,11 @@ async def health() -> JSONResponse:
 @app.get("/ready")
 async def ready() -> JSONResponse:
     """Readiness endpoint for traffic gating."""
-    if not runtime.healthy:
+    if registry.draining or not runtime.healthy:
         return JSONResponse(status_code=503, content={"status": "not_ready", "dependencies": [],
                                                      "detail": "Service initialization or essential task unavailable"})
     is_ready, dependencies = await collect_readiness(orchestrator_client, durability_store)
-    is_ready = is_ready and runtime.healthy
+    is_ready = is_ready and runtime.healthy and not registry.draining
     status_code = 200 if is_ready else 503
     return JSONResponse(
         status_code=status_code,
@@ -325,3 +332,6 @@ async def ready() -> JSONResponse:
 async def metrics() -> Response:
     """Prometheus metrics endpoint."""
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+app.add_middleware(DrainMiddleware, registry=lambda: registry, drain=service_drain)

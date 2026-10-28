@@ -66,7 +66,33 @@ handled after locks expire. Capacity mode retains control-plane lease authority.
 HTTP probes also require the business listener to be serving, including after
 readiness finishes checking dependencies. Either listener
 exiting unexpectedly terminates the process with a failure status. Normal
-SIGTERM/SIGINT closes both listeners gracefully, with a 30-second shutdown bound.
+SIGTERM/SIGINT closes dispatch admission and every scheduling path on the event
+loop. `/ready` immediately returns 503; `/health` stays live while essential
+workers and listeners remain healthy. The default `SERVICE_DRAIN_TIMEOUT_SECONDS`
+is 870. The first signal sets one monotonic deadline; repeated signals do not
+change it. Accepted tasks finish normally, including their finalizers. Queued
+claims with no scheduled task are released promptly; scheduled tasks still marked
+`queued` retain ownership until they settle. Approval/dependency continuations
+remain durable for another replica rather than occupying this shutdown window.
+
+At the deadline, accepted execution is cancelled before listener/lifespan teardown.
+Finalizers, lease release and dependencies have at most 20 additional seconds.
+A process watchdog enforces the bound even if a task suppresses cancellation.
+The process exits early after its own accepted work finishes; it does not wait
+for a global outbox to empty. Deploy with a 900-second termination grace and
+`maxUnavailable: 0`, `maxSurge: 1`, `minReadySeconds: 5`. Terminating pods overlap
+replacements, requiring compute and provider-capacity headroom. Runtime and tool
+execution policies remain unchanged; operations beyond the configured shutdown
+window cannot be promised uninterrupted completion.
+
+Locally owned work polls control-plane durable cancellation every two seconds in
+batches of at most 100, including during drain. Direct cancellation remains
+available for legacy servers returning 404/405. Polling never claims remote work
+or treats missing support as cancellation. Capacity leases use optional
+`leaseRemainingMs` from request start; transient renewal failures are tolerated
+only before that confirmed deadline. Malformed metadata, revocation, or expiry
+stops execution. Servers without metadata retain fail-on-first-renew-error
+behavior; a modern confirmed lease never becomes unbounded if metadata disappears.
 Redis connections use `READINESS_CHECK_TIMEOUT_MS` for socket connect/read
 limits as well as the readiness deadline.
 

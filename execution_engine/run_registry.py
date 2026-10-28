@@ -3,7 +3,7 @@
 import asyncio
 import uuid
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Dict, Optional, Tuple
 
@@ -12,9 +12,27 @@ from execution_engine.config import settings
 from execution_engine.durability import ACTIVE_STATUSES, TERMINAL_STATUSES, DurabilityStore
 from execution_engine.models import CommitRequest, Event, Timing, Usage
 from execution_engine.orchestrator_client import OrchestratorClient
-from execution_engine.run_scheduling import enqueue_run, finish_execution, refill_queued_runs, resume_run
+from execution_engine.run_draining import (
+    begin_drain,
+    cancel_owned_run,
+    dequeue,
+    owned_run_ids,
+    release_unscheduled_claims,
+)
+from execution_engine.run_scheduling import (
+    cleanup_terminal_runs,
+    enqueue_run,
+    finish_execution,
+    refill_queued_runs,
+    resume_run,
+    state_from_persisted,
+)
 from execution_engine.util.logging import logger
 from execution_engine.util.metrics import event_outbox_pending, terminal_commits_pending, terminal_commits_total
+
+
+class ServiceDraining(RuntimeError):
+    """Admission has closed before any durable reservation or scheduling."""
 
 
 class RunStatus(str, Enum):
@@ -154,6 +172,8 @@ class RunRegistry:
         Args:
             max_concurrent_runs: Maximum number of concurrent runs allowed.
         """
+        self.draining = False
+        self.active_tasks: set[asyncio.Task] = set()
         self._runs: Dict[RunKey, RunState] = {}
         self._run_id_to_key: Dict[str, RunKey] = {}
         self._lock = asyncio.Lock()
@@ -167,6 +187,18 @@ class RunRegistry:
         self._owner_id = uuid.uuid4().hex
         self._event_recovery_offset = 0
         self._commit_recovery_offset = 0
+
+    def begin_drain(self) -> None:
+        return begin_drain(self)
+
+    def release_unscheduled_claims(self) -> None:
+        return release_unscheduled_claims(self)
+
+    def owned_run_ids(self) -> set[str]:
+        return owned_run_ids(self)
+
+    def cancel_owned_run(self, run_id: str) -> None:
+        return cancel_owned_run(self, run_id)
 
     async def get_or_create(
         self,
@@ -219,6 +251,8 @@ class RunRegistry:
             trigger_id,
         )
         async with self._lock:
+            if self.draining:
+                raise ServiceDraining()
             if run_id in self._run_id_to_key:
                 existing_key = self._run_id_to_key[run_id]
                 if existing_key != key:
@@ -325,27 +359,7 @@ class RunRegistry:
             return state, True
 
     def _state_from_persisted(self, persisted) -> RunState:
-        state = RunState(
-            persisted.workspace_id,
-            persisted.target_id,
-            persisted.target_type,
-            persisted.session_id,
-            persisted.run_id,
-            persisted.message_id,
-            scope_type=getattr(persisted, "scope_type", "target"),
-            workflow_id=getattr(persisted, "workflow_id", None),
-            execution_id=getattr(persisted, "execution_id", None),
-            workflow_session_id=getattr(persisted, "workflow_session_id", None),
-            executor_role=getattr(persisted, "executor_role", None),
-            parent_run_id=getattr(persisted, "parent_run_id", None),
-            agent_id=getattr(persisted, "agent_id", None),
-            trigger_id=getattr(persisted, "trigger_id", None),
-        )
-        state.status = RunStatus(persisted.status)
-        state.created_at = persisted.created_at
-        state.started_at = persisted.started_at
-        state.ended_at = persisted.ended_at
-        return state
+        return state_from_persisted(persisted)
 
     def get_by_run_id(self, run_id: str) -> Optional[RunState]:
         """Returns the RunState for a given run_id if it exists."""
@@ -375,6 +389,8 @@ class RunRegistry:
 
     async def requeue(self, run_id: str) -> None:
         """Keep an already accepted run pending even if new dispatch filled the queue."""
+        if self.draining:
+            return
         self._scheduled.discard(run_id)
         self._queue.put_nowait(run_id)
         self._queued.add(run_id)
@@ -387,11 +403,7 @@ class RunRegistry:
             self.durability_store.save_authority(authority)
 
     async def dequeue(self) -> str:
-        """Waits for and returns the next run_id from the queue."""
-        run_id = await self._queue.get()
-        self._queued.discard(run_id)
-        self._scheduled.add(run_id)
-        return run_id
+        return await dequeue(self)
 
     def task_done(self) -> None:
         """Signals that a previously enqueued task is complete."""
@@ -633,15 +645,4 @@ class RunRegistry:
         return settings.run_id_lock_ttl_seconds
 
     def cleanup_terminal_runs(self, now: datetime | None = None) -> int:
-        """Removes terminal run entries past the configured TTL."""
-        cutoff = (now or datetime.now(UTC)) - timedelta(seconds=self.terminal_run_ttl_seconds)
-        removed = 0
-        for key, state in list(self._runs.items()):
-            if state.status.value in TERMINAL_STATUSES and state.ended_at and state.ended_at < cutoff:
-                self._runs.pop(key, None)
-                self._run_id_to_key.pop(state.run_id, None)
-                removed += 1
-
-        if self.durability_store:
-            self.durability_store.cleanup_terminal_runs(cutoff)
-        return removed
+        return cleanup_terminal_runs(self, now)

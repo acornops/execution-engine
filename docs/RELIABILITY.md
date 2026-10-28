@@ -6,7 +6,7 @@
 - Worker loop blocks or leaks terminal states.
 - Control-plane bootstrap/context/event/commit traffic fails or times out.
 - llm-gateway streaming or tool calls degrade mid-run.
-- Execution-engine restarts can interrupt in-flight agent work; stale active runs must be failed explicitly rather than left running.
+- Graceful execution-engine restarts drain accepted work within the configured window; forced exits can interrupt in-flight agent work; stale active runs must be failed explicitly rather than left running.
 - Runs paused at a write approval boundary must remain resumable without occupying a worker slot.
 - Approved writes must execute at most once. Unknown post-crash outcomes must fail closed instead of being retried automatically.
 - Redis is unavailable in production, preventing durable event/commit retry and cross-instance idempotency.
@@ -75,3 +75,13 @@
 - Gateway stream failures: `execution_engine_gateway_streams_total{result!="success"}` increases faster than the accepted error budget.
 - Tool-call failures: `execution_engine_tool_calls_total{result!="success"}` spikes.
 - Run failures/cancellations: `runs_failed_total` or `runs_cancelled_total` rate increases unexpectedly.
+
+- Native first-signal drain stops dispatch, dequeue, refill, requeue and resume
+  scheduling together. Queued status alone never proves that ownership can be
+  released: an already scheduled task may not have entered its running state.
+- Lease renewal, durable cancellation observation, event delivery and finalizers
+  continue during drain. Finalizers remain attached to their executing task even
+  when deadline cancellation arrives while a terminal commit is in progress.
+- Pending gateway stream reads are cancelled and awaited with their parent run;
+  they cannot outlive dependency teardown. Trusted pre-admission errors are the
+  only gateway POST replay permission.

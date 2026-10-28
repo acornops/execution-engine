@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 
+from execution_engine.drain import finish_cleanup
 from execution_engine.models import CommitRequest, Timing
 from execution_engine.run_registry import RunStatus
 from execution_engine.util.logging import logger, reset_log_context
@@ -10,6 +11,17 @@ from execution_engine.util.metrics import active_runs, run_duration_seconds
 
 async def finalize_run(worker, state, *, full_text, usage, event_manager, tool_client,
                        continuation, suspended_for_approval, token) -> None:
+    try:
+        await finish_cleanup(_finalize_run(
+            worker, state, full_text=full_text, usage=usage, event_manager=event_manager,
+            tool_client=tool_client, continuation=continuation, suspended_for_approval=suspended_for_approval,
+        ))
+    finally:
+        reset_log_context(token)
+
+
+async def _finalize_run(worker, state, *, full_text, usage, event_manager, tool_client,
+                        continuation, suspended_for_approval) -> None:
     try:
         assistant_content = "" if state.status == RunStatus.CANCELLED else full_text
         state.final_text = assistant_content
@@ -49,4 +61,3 @@ async def finalize_run(worker, state, *, full_text, usage, event_manager, tool_c
         active_runs.dec()
         if not state.execution_lock_lost:
             worker.registry.cleanup_terminal_runs()
-        reset_log_context(token)

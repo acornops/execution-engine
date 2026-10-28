@@ -8,8 +8,10 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+import execution_engine.app as application
 from execution_engine.app import health, ready
 from execution_engine.config import settings
+from execution_engine.drain import service_drain
 from execution_engine.internal_transport import uvicorn_ssl_kwargs
 from execution_engine.runtime_state import runtime
 from execution_engine.service_server import ServiceServers
@@ -60,7 +62,11 @@ async def main() -> None:
         configs.append(uvicorn.Config(probe_app, host="0.0.0.0", port=settings.INTERNAL_TRANSPORT_HEALTH_PORT,
                                       log_level=settings.LOG_LEVEL.lower()))
     global servers
-    servers = ServiceServers(configs, healthy=lambda: runtime.healthy)
+    servers = ServiceServers(
+        configs, healthy=lambda: runtime.healthy, drain=service_drain,
+        begin_drain=lambda: application.registry.begin_drain(),
+        work_tasks=lambda: application.registry.active_tasks,
+    )
     try:
         await servers.run()
     finally:

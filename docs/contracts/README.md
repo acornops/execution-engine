@@ -163,3 +163,33 @@ Coordinator waits persist the full ReAct transcript through
 GET returns `{kind:"dependency",runId,generation,state}` for these waits. The worker
 releases its gates after durable save and unwinding, resumes the same run identity,
 and injects settled child results without repeating delegation writes.
+
+## Graceful drain compatibility
+
+The mirrored `gracefulDrainContract` keeps existing contract versions unchanged.
+Only a direct internal HTTP 503 with `error.code=SERVICE_DRAINING`, the message
+`Service is draining`, `retryable=true`, and `outcome=not_started` permits replay.
+Listeners return `Retry-After: 1` and close HTTP/1.1 connections. Authentication
+failures, redirects, truncated responses, ordinary provider failures and accepted
+streams never authorize replay. Engine dispatch rechecks admission after awaited
+authorization and registry lock acquisition, before making a durable reservation.
+
+Engine tool payloads retain their logical tool-call ID and approval receipt during
+pre-admission retries. Its own HTTP drain wait has a separate 45-second allowance.
+Each accepted tool transport retains `TOOL_CALL_TIMEOUT_SECONDS` plus 5 seconds
+of gateway headroom, 45 seconds for the gateway's CP HTTP drain retry and up to
+45 seconds for CP agent-owner handoff. This transport allowance does not extend
+the agent's actual tool execution deadline or the run's existing runtime policy.
+Generation retry is permitted only before a successful stream response.
+
+Control plane produces optional integer `leaseRemainingMs` from its database clock
+on acquire/renew. The engine measures it conservatively from request start, keeps
+owner/generation fences, and stops on expiry or permanent revocation. Missing
+metadata retains legacy conservative behavior. Cancellation observation uses the
+service-authenticated `/internal/v1/runs/cancellation-status` route, with at most
+100 locally owned IDs per request; it requires no execution lease.
+
+Deploy consumers that understand optional fields and drain errors before enabling
+the behavior throughout the deployment. Initial cutover and rollback require
+controlled operation. Old binaries do not gain drain guarantees. The deployment
+repository owns rollout sequencing and termination-grace manifests.

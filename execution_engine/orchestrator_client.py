@@ -108,6 +108,21 @@ class OrchestratorClient:
         response.raise_for_status()
         return response.json()
 
+    async def cancellation_status(self, run_ids: list[str]) -> set[str]:
+        """Observe durable cancellation without requiring execution lease authority."""
+        response = await self.client.post(
+            f"{self.base_url}{INTERNAL_CONTROL_PLANE_PREFIX}/runs/cancellation-status",
+            json={"runIds": run_ids}, follow_redirects=False,
+        )
+        if response.status_code in {404, 405}:
+            return set()  # Older CP retains its direct cancellation delivery path.
+        response.raise_for_status()
+        payload = response.json()
+        cancelled = payload.get("cancelledRunIds") if isinstance(payload, dict) else None
+        if not isinstance(cancelled, list) or any(not isinstance(value, str) for value in cancelled):
+            raise ValueError("Invalid cancellation-status response")
+        return set(cancelled) & set(run_ids)
+
     async def health(self) -> None:
         """Checks basic orchestrator reachability."""
         response = await self.client.get(f"{self.base_url}/health")

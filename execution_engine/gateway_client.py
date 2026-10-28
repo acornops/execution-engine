@@ -7,6 +7,7 @@ import httpx
 
 from execution_engine.capacity import authority_request_hook
 from execution_engine.config import settings
+from execution_engine.gateway_transport import generation_stream
 from execution_engine.internal_transport import httpx_tls_kwargs
 from execution_engine.util.metrics import gateway_stream_malformed_chunks_total, gateway_streams_total
 
@@ -167,7 +168,7 @@ class GatewayLlmClient:
                 **httpx_tls_kwargs(),
             ) as client:
                 url = f"{self.url}/api/v1/llm/generations:stream"
-                async with client.stream("POST", url, json=payload) as response:
+                async with generation_stream(client, url, payload) as response:
                     if response.status_code >= 400:
                         await response.aread()
                     response.raise_for_status()

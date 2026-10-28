@@ -1,5 +1,6 @@
 """Interface and stubs for MCP Tool execution."""
 
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Iterable
 
@@ -9,6 +10,12 @@ from pydantic import ValidationError
 from execution_engine.agent.tool_context import MAX_RESULT_CONTEXT_BYTES, compact_tool_context, json_bytes
 from execution_engine.capacity import authority_request_hook
 from execution_engine.config import settings
+from execution_engine.drain import (
+    GATEWAY_DRAIN_RETRY_SECONDS,
+    gateway_tool_transport_seconds,
+    is_trusted_drain_response,
+    wait_retry,
+)
 from execution_engine.internal_transport import httpx_tls_kwargs
 from execution_engine.model_tool_names import ModelToolNameMap
 from execution_engine.models import ToolCallRequest, ToolCallResponse
@@ -430,7 +437,7 @@ class GatewayToolClient(ToolClient):
         self.headers = {"Authorization": f"Bearer {self.token}"}
         self._client = httpx.AsyncClient(event_hooks={"request": [authority_request_hook]},
             headers=self.headers,
-            timeout=float(settings.TOOL_CALL_TIMEOUT_SECONDS),
+            timeout=gateway_tool_transport_seconds(),
             **httpx_tls_kwargs(),
         )
 
@@ -440,7 +447,7 @@ class GatewayToolClient(ToolClient):
 
     async def _post_bounded(self, url: str, payload: dict[str, Any]) -> httpx.Response:
         """Read a gateway tool response without allowing an unbounded allocation."""
-        async with self._client.stream("POST", url, json=payload) as streamed:
+        async with self._client.stream("POST", url, json=payload, follow_redirects=False) as streamed:
             chunks: list[bytes] = []
             received = 0
             async for chunk in streamed.aiter_bytes():
@@ -512,9 +519,11 @@ class GatewayToolClient(ToolClient):
             payload_json.pop("approval_receipt", None)
 
         try:
-            response = await self._post_bounded(
-                f"{self.url}/api/v1/mcp/tool-call", payload_json
-            )
+            retry_deadline = time.monotonic() + GATEWAY_DRAIN_RETRY_SECONDS
+            while True:
+                response = await self._post_bounded(f"{self.url}/api/v1/mcp/tool-call", payload_json)
+                if not is_trusted_drain_response(response) or not await wait_retry(retry_deadline):
+                    break
             response.raise_for_status()
             tool_resp = ToolCallResponse.model_validate(response.json())
         except ToolGatewayResponseTooLargeError:

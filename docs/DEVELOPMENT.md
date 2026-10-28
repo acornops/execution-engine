@@ -51,6 +51,7 @@ Important variables:
 - `EXECUTION_GATEWAY_BASE_URL`
 - `REDIS_URL`
 - `MAX_CONCURRENT_RUNS`
+- `SERVICE_DRAIN_TIMEOUT_SECONDS` (default 870; native launcher only)
 
 `MAX_CONCURRENT_RUNS` is per execution-engine pod.
 
@@ -90,3 +91,10 @@ If docs are intentionally unchanged, record `Docs impact: none` and the reason i
 ## Documentation Harness
 
 Keep `README.md`, `AGENTS.md`, `ARCHITECTURE.md`, `docs/index.md`, this file, and `docs/OPERATIONS.md` in sync when changing repo behavior. `task validate` runs the harness checks.
+
+`task recovery-integration` includes native HTTP/TLS SIGTERM checks with connected
+gateway streams, capacity on/off, cancellation during drain, and slow finalizers.
+Set `ACORNOPS_RECOVERY_REDIS_URL` to a disposable local Redis for real ownership
+races. These checks use unique key prefixes. Run production signal tests through
+`python -m execution_engine.serve`; raw Uvicorn reload mode does not own the
+coordinated drain lifecycle.

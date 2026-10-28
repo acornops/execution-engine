@@ -176,6 +176,10 @@ async def test_readiness_bounds_slow_dependency_and_preserves_its_name(monkeypat
 
 @pytest.mark.asyncio
 async def test_launcher_stops_probe_when_business_server_returns_without_starting(monkeypatch):
+    from execution_engine.drain import ServiceDrain
+
+    monkeypatch.setattr(app_module, "registry", RunRegistry(2))
+    monkeypatch.setattr(serve_module, "service_drain", ServiceDrain(1))
     stopped = asyncio.Event()
 
     class Server:
@@ -370,7 +374,7 @@ async def test_signal_starts_deadline_even_when_server_never_returns(monkeypatch
         return await real_wait(tasks, timeout=0.01 if timeout == 30 else timeout, return_when=return_when)
 
     monkeypatch.setattr(asyncio, "wait", fast_deadline)
-    supervisor = ServiceServers([])
+    supervisor = ServiceServers([], shutdown_timeout=.1)
     supervisor.servers = [Server()]
     task = asyncio.create_task(supervisor.run())
     await asyncio.wait_for(started.wait(), 1)

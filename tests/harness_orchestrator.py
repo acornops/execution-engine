@@ -127,5 +127,13 @@ async def commit_get(run_id: str):
     """Inspection endpoint for tests/manual verification."""
     return received_commits.get(run_id, {})
 
+
+
+@app.get('/internal/v1/runs/{run_id}/event-cursor')
+async def event_cursor(run_id: str):
+    """Expose the current replay cursor required before every engine dispatch."""
+    return {'latestSeq': max((event['seq'] for event in received_events.get(run_id, [])), default=0)}
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

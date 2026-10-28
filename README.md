@@ -287,3 +287,11 @@ Run the checks that match the change:
 - `execution_engine/agent/`: Reasoning engine implementations (ReAct) and tool stubs.
 - `tests/`: Mock harnesses and integration tests.
 - `Taskfile.yml`: Consolidated development commands.
+
+### Graceful rolling restart
+
+The native launcher drains accepted runs on SIGTERM/SIGINT for up to
+`SERVICE_DRAIN_TIMEOUT_SECONDS` (default 870), with at most 20 more seconds for
+final cleanup. Readiness drops immediately; local liveness continues while
+essential workers remain healthy. See [Operations](docs/OPERATIONS.md) for
+ownership, cancellation, rollout compatibility, and termination-grace settings.
