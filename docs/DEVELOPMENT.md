@@ -7,6 +7,7 @@ This repository owns the run execution worker, run lifecycle handling, durabilit
 ## Prerequisites
 
 - Python 3.12.11. The local interpreter should match `.python-version`; CI and production images use the same Python release line.
+- CI jobs that install Python use Ubuntu 24.04, which provides the pinned 3.12.11 build.
 - Task CLI
 - Docker Compose for integration-style local runs
 - Redis for production-like durability behavior

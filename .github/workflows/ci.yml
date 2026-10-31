@@ -81,7 +81,7 @@ jobs:
   lint:
     needs: changes
     if: needs.changes.outputs.run_full == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -104,7 +104,7 @@ jobs:
   unit-test:
     needs: [changes, lint]
     if: needs.changes.outputs.run_full == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       redis:
         image: redis:7-alpine
@@ -176,7 +176,7 @@ jobs:
   image-supply-chain:
     needs: [changes, integration-test]
     if: needs.changes.outputs.run_full == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
