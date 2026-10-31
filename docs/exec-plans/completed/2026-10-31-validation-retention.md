@@ -107,7 +107,7 @@ expires with that history; schedule and inbound webhook delivery identities stay
 This means long-lived active sessions retain old history, and clients must not
 replay expired historical request IDs. It is an age policy, not a disk quota.
 
-Apply migration014 before the new Control Plane. Its three transactional index
+Apply migration 015 before the new Control Plane. Its three transactional index
 builds require an appropriate maintenance window and disk/WAL headroom on large
 databases. Export history that must survive the configured window before rollout;
 rollback cannot restore purged history. Engine and Gateway can roll out in either
