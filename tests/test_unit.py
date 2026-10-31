@@ -623,7 +623,7 @@ def test_worker_keeps_deep_tool_schemas_valid_without_injecting_none():
     assert contains_none(schema) is False
 
 
-def test_worker_preserves_intentional_null_literals_and_omits_unsupported_values():
+def test_worker_preserves_null_literals_and_rejects_unsupported_values():
     sanitized = sanitize_tool_spec_for_llm(
         {
             "name": "nullable_tool",
@@ -632,7 +632,6 @@ def test_worker_preserves_intentional_null_literals_and_omits_unsupported_values
                 "type": "object",
                 "properties": {
                     "nullable_literal": {"const": None},
-                    "unsupported": object(),
                 },
             },
         }
@@ -641,7 +640,8 @@ def test_worker_preserves_intentional_null_literals_and_omits_unsupported_values
     assert sanitized is not None
     properties = sanitized["input_schema"]["properties"]
     assert properties["nullable_literal"]["const"] is None
-    assert "unsupported" not in properties
+    with pytest.raises(ValueError, match="TOOL_SCHEMA_REJECTED"):
+        sanitize_tool_spec_for_llm({"name": "unsupported", "input_schema": {"properties": {"x": object()}}})
 
 
 @pytest.mark.asyncio

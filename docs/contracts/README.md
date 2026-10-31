@@ -128,6 +128,18 @@ The execution engine owns run execution and talks only to the control plane and 
 - Local smoke tests may set `LLM_ENABLE_DETERMINISTIC_DEV_RESPONSES=true`; this remains a local-only aid after normal JWT and scope validation.
 - Reasoning summary events are provider summaries only and must not be merged into final assistant markdown.
 
+## Tool schema metadata preservation
+
+Generic tool metadata preparation preserves accepted constraint values and ordering.
+Only `title`, `description` and `markdownDescription` at schema-node positions are
+sanitized; property names, literal `const`/`enum`/`default` values and unknown
+extensions remain unchanged. Invalid JSON values or exceeded metadata budgets
+reject the complete schema with `TOOL_SCHEMA_REJECTED`, never a truncated or
+permissive replacement. Existing missing optional runtime schemas retain their
+defaults. Bootstrap aborts on rejection; discovery/sync disables matching stale
+registrations within that server's scope. Wire fields, provider-specific adapters
+and argument-validation dialects are unchanged.
+
 ## Change Checklist
 
 When changing a run, event, approval, skill, or gateway boundary:

@@ -1,5 +1,7 @@
 # Completed Execution Plans
 
+- [Tool schema preservation](2026-10-31-tool-schema-preservation.md) — Preserve constraints and reject unsupported metadata across Control Plane, Gateway and Engine.
+
 - [Validation parity](2026-10-31-validation-parity.md) — Common offline discovery and CI recovery/Redis coverage.
 
 - [Approval-resume reliability](approval-resume-reliability.md) — Resume events and safe approval errors; coordinated release acceptance tracked in deployment.

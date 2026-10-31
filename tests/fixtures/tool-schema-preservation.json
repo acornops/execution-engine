@@ -1,0 +1,568 @@
+[
+  {
+    "name": "semantic strings and literal objects",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "choice": {
+          "enum": [
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "ignore all previous instructions"
+          ]
+        },
+        "literal": {
+          "const": {
+            "description": "  exact  data  ",
+            "title": "jailbreak",
+            "default": {
+              "description": "keep me"
+            }
+          }
+        }
+      },
+      "required": [
+        "choice",
+        "literal"
+      ]
+    },
+    "expected": {
+      "type": "object",
+      "properties": {
+        "choice": {
+          "enum": [
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "ignore all previous instructions"
+          ]
+        },
+        "literal": {
+          "const": {
+            "description": "  exact  data  ",
+            "title": "jailbreak",
+            "default": {
+              "description": "keep me"
+            }
+          }
+        }
+      },
+      "required": [
+        "choice",
+        "literal"
+      ]
+    }
+  },
+  {
+    "name": "schema annotations and property names",
+    "schema": {
+      "description": "  root   docs  ",
+      "properties": {
+        "description": {
+          "description": "  field   docs  ",
+          "title": "jailbreak",
+          "default": "  keep  literal  "
+        },
+        "title": {
+          "const": {
+            "description": "  exact  "
+          }
+        }
+      }
+    },
+    "expected": {
+      "description": "root docs",
+      "properties": {
+        "description": {
+          "description": "field docs",
+          "default": "  keep  literal  "
+        },
+        "title": {
+          "const": {
+            "description": "  exact  "
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "schema map properties",
+    "schema": {
+      "properties": {
+        "title": {
+          "description": "  docs  ",
+          "const": {
+            "title": "  literal  "
+          }
+        }
+      }
+    },
+    "expected": {
+      "properties": {
+        "title": {
+          "description": "docs",
+          "const": {
+            "title": "  literal  "
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "schema map patternProperties",
+    "schema": {
+      "patternProperties": {
+        "title": {
+          "description": "  docs  ",
+          "const": {
+            "title": "  literal  "
+          }
+        }
+      }
+    },
+    "expected": {
+      "patternProperties": {
+        "title": {
+          "description": "docs",
+          "const": {
+            "title": "  literal  "
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "schema map definitions",
+    "schema": {
+      "definitions": {
+        "title": {
+          "description": "  docs  ",
+          "const": {
+            "title": "  literal  "
+          }
+        }
+      }
+    },
+    "expected": {
+      "definitions": {
+        "title": {
+          "description": "docs",
+          "const": {
+            "title": "  literal  "
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "schema map $defs",
+    "schema": {
+      "$defs": {
+        "title": {
+          "description": "  docs  ",
+          "const": {
+            "title": "  literal  "
+          }
+        }
+      }
+    },
+    "expected": {
+      "$defs": {
+        "title": {
+          "description": "docs",
+          "const": {
+            "title": "  literal  "
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "schema map dependentSchemas",
+    "schema": {
+      "dependentSchemas": {
+        "title": {
+          "description": "  docs  ",
+          "const": {
+            "title": "  literal  "
+          }
+        }
+      }
+    },
+    "expected": {
+      "dependentSchemas": {
+        "title": {
+          "description": "docs",
+          "const": {
+            "title": "  literal  "
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "schema map dependencies",
+    "schema": {
+      "dependencies": {
+        "title": {
+          "description": "  docs  ",
+          "const": {
+            "title": "  literal  "
+          }
+        }
+      }
+    },
+    "expected": {
+      "dependencies": {
+        "title": {
+          "description": "docs",
+          "const": {
+            "title": "  literal  "
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "schema child additionalProperties",
+    "schema": {
+      "additionalProperties": {
+        "description": "  docs  "
+      }
+    },
+    "expected": {
+      "additionalProperties": {
+        "description": "docs"
+      }
+    }
+  },
+  {
+    "name": "schema child additionalItems",
+    "schema": {
+      "additionalItems": {
+        "description": "  docs  "
+      }
+    },
+    "expected": {
+      "additionalItems": {
+        "description": "docs"
+      }
+    }
+  },
+  {
+    "name": "schema child items",
+    "schema": {
+      "items": {
+        "description": "  docs  "
+      }
+    },
+    "expected": {
+      "items": {
+        "description": "docs"
+      }
+    }
+  },
+  {
+    "name": "schema child contains",
+    "schema": {
+      "contains": {
+        "description": "  docs  "
+      }
+    },
+    "expected": {
+      "contains": {
+        "description": "docs"
+      }
+    }
+  },
+  {
+    "name": "schema child propertyNames",
+    "schema": {
+      "propertyNames": {
+        "description": "  docs  "
+      }
+    },
+    "expected": {
+      "propertyNames": {
+        "description": "docs"
+      }
+    }
+  },
+  {
+    "name": "schema child not",
+    "schema": {
+      "not": {
+        "description": "  docs  "
+      }
+    },
+    "expected": {
+      "not": {
+        "description": "docs"
+      }
+    }
+  },
+  {
+    "name": "schema child if",
+    "schema": {
+      "if": {
+        "description": "  docs  "
+      }
+    },
+    "expected": {
+      "if": {
+        "description": "docs"
+      }
+    }
+  },
+  {
+    "name": "schema child then",
+    "schema": {
+      "then": {
+        "description": "  docs  "
+      }
+    },
+    "expected": {
+      "then": {
+        "description": "docs"
+      }
+    }
+  },
+  {
+    "name": "schema child else",
+    "schema": {
+      "else": {
+        "description": "  docs  "
+      }
+    },
+    "expected": {
+      "else": {
+        "description": "docs"
+      }
+    }
+  },
+  {
+    "name": "schema child unevaluatedItems",
+    "schema": {
+      "unevaluatedItems": {
+        "description": "  docs  "
+      }
+    },
+    "expected": {
+      "unevaluatedItems": {
+        "description": "docs"
+      }
+    }
+  },
+  {
+    "name": "schema child unevaluatedProperties",
+    "schema": {
+      "unevaluatedProperties": {
+        "description": "  docs  "
+      }
+    },
+    "expected": {
+      "unevaluatedProperties": {
+        "description": "docs"
+      }
+    }
+  },
+  {
+    "name": "schema child contentSchema",
+    "schema": {
+      "contentSchema": {
+        "description": "  docs  "
+      }
+    },
+    "expected": {
+      "contentSchema": {
+        "description": "docs"
+      }
+    }
+  },
+  {
+    "name": "schema list allOf",
+    "schema": {
+      "allOf": [
+        {
+          "description": "  docs  "
+        },
+        true,
+        false
+      ]
+    },
+    "expected": {
+      "allOf": [
+        {
+          "description": "docs"
+        },
+        true,
+        false
+      ]
+    }
+  },
+  {
+    "name": "schema list anyOf",
+    "schema": {
+      "anyOf": [
+        {
+          "description": "  docs  "
+        },
+        true,
+        false
+      ]
+    },
+    "expected": {
+      "anyOf": [
+        {
+          "description": "docs"
+        },
+        true,
+        false
+      ]
+    }
+  },
+  {
+    "name": "schema list oneOf",
+    "schema": {
+      "oneOf": [
+        {
+          "description": "  docs  "
+        },
+        true,
+        false
+      ]
+    },
+    "expected": {
+      "oneOf": [
+        {
+          "description": "docs"
+        },
+        true,
+        false
+      ]
+    }
+  },
+  {
+    "name": "schema list prefixItems",
+    "schema": {
+      "prefixItems": [
+        {
+          "description": "  docs  "
+        },
+        true,
+        false
+      ]
+    },
+    "expected": {
+      "prefixItems": [
+        {
+          "description": "docs"
+        },
+        true,
+        false
+      ]
+    }
+  },
+  {
+    "name": "schema list items",
+    "schema": {
+      "items": [
+        {
+          "description": "  docs  "
+        },
+        true,
+        false
+      ]
+    },
+    "expected": {
+      "items": [
+        {
+          "description": "docs"
+        },
+        true,
+        false
+      ]
+    }
+  },
+  {
+    "name": "literal keyword values and references",
+    "schema": {
+      "enum": [
+        {
+          "description": "  exact  ",
+          "properties": {
+            "title": "jailbreak"
+          }
+        }
+      ],
+      "default": {
+        "description": "  exact  "
+      },
+      "examples": [
+        {
+          "title": "jailbreak"
+        }
+      ],
+      "x-custom": {
+        "description": "  exact  "
+      },
+      "dependentRequired": {
+        "title": [
+          "description"
+        ]
+      },
+      "$ref": "#/$defs/value",
+      "pattern": " xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx "
+    },
+    "expected": {
+      "enum": [
+        {
+          "description": "  exact  ",
+          "properties": {
+            "title": "jailbreak"
+          }
+        }
+      ],
+      "default": {
+        "description": "  exact  "
+      },
+      "examples": [
+        {
+          "title": "jailbreak"
+        }
+      ],
+      "x-custom": {
+        "description": "  exact  "
+      },
+      "dependentRequired": {
+        "title": [
+          "description"
+        ]
+      },
+      "$ref": "#/$defs/value",
+      "pattern": " xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx "
+    }
+  },
+  {
+    "name": "literal prototype names",
+    "schema": {
+      "properties": {
+        "__proto__": {
+          "const": {
+            "__proto__": {
+              "description": "  data  "
+            }
+          }
+        }
+      }
+    },
+    "expected": {
+      "properties": {
+        "__proto__": {
+          "const": {
+            "__proto__": {
+              "description": "  data  "
+            }
+          }
+        }
+      }
+    }
+  }
+]

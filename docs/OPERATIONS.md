@@ -133,6 +133,25 @@ unique key prefixes and delete only their own test records.
 - `execution_engine_remediation_write_outcomes_total`
 - `execution_engine_remediation_verification_outcomes_total`
 
+## Tool schema rejection
+
+`TOOL_SCHEMA_REJECTED` identifies a tool definition that cannot be preserved.
+Control Plane and Execution Engine allow 256 KiB of compact UTF-8 JSON per schema,
+depth 16 and 100 entries per container. Gateway remote discovery retains its
+8 KiB, depth 8 and 100-entry limits. Traversals also cap visited values at 16,384.
+These limits apply before annotation cleanup; over-limit definitions fail explicitly.
+Use the safe tool name/reason in logs or discovery status to correct the producer.
+
+Upgrade all three services before rediscovering remote tools or re-syncing builtins.
+Previously persisted truncated constraints cannot be reconstructed automatically.
+If authenticated rediscovery reports a reviewed-definition conflict, replace the
+obsolete registration through the existing administration workflow, then rediscover
+and review it. Rejected tools remain disabled until a valid definition is reviewed
+and enabled through the existing administration flow. If registry cleanup fails,
+built-in bootstrap keeps the schema rejection; retry sync/discovery once the registry
+recovers. No migration, dependency or setting is added. Metadata bounds
+do not provide a hard CPU deadline for regex/schema validation; that remains deferred.
+
 ## Failure Runbooks
 
 - Redis unavailable: remove the instance from traffic via `/ready`, restore Redis, then confirm event and terminal commit pending gauges drain.
