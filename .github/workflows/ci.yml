@@ -87,7 +87,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.12.11'
           cache: 'pip'
           cache-dependency-path: |
             constraints.txt
@@ -105,12 +105,22 @@ jobs:
     needs: [changes, lint]
     if: needs.changes.outputs.run_full == 'true'
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.12.11'
           cache: 'pip'
           cache-dependency-path: |
             constraints.txt
@@ -123,9 +133,15 @@ jobs:
           pip install -c constraints.txt -r requirements-dev.txt
       - name: Run unit tests
         run: |
-          PYTHONPATH=. pytest tests/test_unit.py tests/test_worker_fallback.py tests/test_supporting_components.py --cov=execution_engine --cov-report=term-missing --cov-report=xml
+          python scripts/check-python-version.py
+          PYTHONPATH=. python -m pytest --cov=execution_engine --cov-report=term-missing --cov-report=xml
           python3 scripts/check-contracts.py
           python3 scripts/check-harness.py
+          PYTHONPATH=. python3 scripts/run-keyless-evals.py
+      - name: Run recovery and drain process tests
+        env:
+          ACORNOPS_RECOVERY_REDIS_URL: redis://127.0.0.1:6379/0
+        run: PYTHONPATH=. python -m pytest tests/test_recovery_process.py tests/test_drain_process.py
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -169,7 +185,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.12.11'
           cache: 'pip'
           cache-dependency-path: |
             constraints.txt

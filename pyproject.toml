@@ -17,3 +17,6 @@ known-first-party = ["execution_engine"]
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+# Default discovery is offline. Explicit file arguments still select these suites.
+addopts = "--ignore=tests/test_integration.py --ignore=tests/test_recovery_process.py --ignore=tests/test_drain_process.py"

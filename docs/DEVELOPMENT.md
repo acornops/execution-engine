@@ -73,6 +73,14 @@ task harness:check
 task keyless-eval
 ```
 
+`task unit-test` and CI use the same pytest discovery configuration in
+`pyproject.toml`. New offline `test_*.py` files are included automatically.
+Default discovery excludes `test_integration.py`, `test_recovery_process.py`,
+and `test_drain_process.py`; explicit file selection still runs these suites.
+CI also runs keyless evaluations and the recovery/process suite against an isolated
+Redis service before the existing Docker integration job. Local Redis checks remain
+opt-in through `ACORNOPS_RECOVERY_REDIS_URL`.
+
 `task keyless-eval` runs the manifest-selected provider-native agent scenarios
 with provider credential variables removed and TCP connections blocked. It
 prints machine-readable totals and per-category results, and fails when a

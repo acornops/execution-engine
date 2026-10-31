@@ -1,5 +1,7 @@
 # Completed Execution Plans
 
+- [Validation parity](2026-10-31-validation-parity.md) — Common offline discovery and CI recovery/Redis coverage.
+
 - [Approval-resume reliability](approval-resume-reliability.md) — Resume events and safe approval errors; coordinated release acceptance tracked in deployment.
 
 - [Disabled-capacity dispatch gate](disabled-capacity-dispatch-gate.md) — Dispatch and dependency corrections released for demo.

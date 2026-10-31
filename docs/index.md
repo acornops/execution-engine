@@ -27,6 +27,7 @@ This `docs/` tree is the repository-local system of record for agent-readable de
 - [Plans](/docs/PLANS.md)
 - [Active Plans](/docs/exec-plans/active/README.md)
 - [Completed Plans](/docs/exec-plans/completed/README.md)
+- [Validation Parity](/docs/exec-plans/completed/2026-10-31-validation-parity.md)
 - [Tech Debt Tracker](/docs/exec-plans/tech-debt-tracker.md)
 
 ## Operational Standards
