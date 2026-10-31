@@ -15,3 +15,10 @@ Assessment date: July 31, 2026.
 284 unit tests, 29 keyless evaluations and the isolated five-test Docker integration suite passed. The parent replica probe ran two real Redis-backed workers against two control-plane HTTP processes with deterministic bounded operations.
 The replica probe substitutes a deterministic operation body; it does not measure
 live provider reliability or model outcome quality. Existing scores are unchanged.
+
+## Scoped hardening evidence — October 31, 2026
+
+[Validation and retention checks](exec-plans/completed/2026-10-31-validation-retention.md)
+cover webhook bounds, PostgreSQL cleanup races, real-process schema deadlines,
+cancellation and unknown-write outcomes. Fresh review findings have regression
+coverage. Existing scores and broader integration coverage gaps remain unchanged.

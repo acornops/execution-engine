@@ -363,7 +363,6 @@ class ReActAgentEngine(AgentEngine):
                     tool_name = str(call["tool"])
                     arguments = dict(call.get("arguments") or {})
                     call_id = str(call["call_id"])
-
                     if call.get("budget_blocked"):
                         value = {
                             "code": "TOOL_CALL_BUDGET_EXCEEDED",
@@ -379,12 +378,16 @@ class ReActAgentEngine(AgentEngine):
                         tool_results.append(transcript_tool_result(call, value, True))
                         next_index += 1
                         continue
-
                     if not call.get("accounted"):
                         call["accounted"] = True
                         total_tool_calls += 1
-
-                    validation = preapproval_validation(call_id, tool_name, arguments, tool_schemas)
+                    validation = await preapproval_validation(call_id, tool_name, arguments, tool_schemas, deadline)
+                    if cancel_event.is_set():
+                        break
+                    if time.monotonic() >= deadline:
+                        yield provider_usage.terminal({"type": "error", "code": "MAX_RUNTIME_EXCEEDED",
+                        "message": "Run exceeded the maximum runtime policy.", "retryable": True})
+                        return
                     if validation is None:
                         validation = remediation_preapproval_validation(call_id, tool_name, arguments, evidence_ledger)
                     if validation:
@@ -398,7 +401,6 @@ class ReActAgentEngine(AgentEngine):
                         )
                         next_index += 1
                         continue
-
                     signature = self._tool_call_signature(tool_name, arguments)
                     if not call.get("duplicate_accounted"):
                         duplicate_counts[signature] = duplicate_counts.get(signature, 0) + 1
@@ -426,7 +428,6 @@ class ReActAgentEngine(AgentEngine):
                         )
                         next_index += 1
                         continue
-
                     if is_skill_call(tool_name):
                         outcome = await resolve_skill_call(
                             arguments,
@@ -440,7 +441,6 @@ class ReActAgentEngine(AgentEngine):
                         tool_results.append(transcript_tool_result(call, outcome.result, outcome.is_error))
                         next_index += 1
                         continue
-
                     if (
                         self.confirmation_required_for_write
                         and self.tool_capabilities.get(tool_name) == "write"

@@ -452,3 +452,55 @@ def test_compaction_can_remove_old_user_turn_but_never_latest_user():
         "assistant",
         "tool_results",
     ]
+
+
+@pytest.mark.asyncio
+async def test_validation_deadline_precedes_write_approval_and_dispatch():
+    llm = CapturingLlm([
+        [{"type": "tool_call", "call_id": "slow", "tool": "restart",
+          "arguments": {"name": "a" * 1000 + "!"}}],
+        [{"type": "final", "usage": {}}],
+    ])
+    tools = SequentialTools()
+    engine = ReActAgentEngine(llm, tools, policy(), scope(),
+                             tool_capabilities={"restart": "write"}, confirmation_required_for_write=True)
+    chunks = await collect(engine, config(), [{"name": "restart", "input_schema": {
+        "type": "object", "properties": {"name": {"type": "string", "pattern": "^(a+)+$"}}
+    }}])
+    assert not tools.calls
+    assert not any(chunk["type"] == "approval_interrupt" for chunk in chunks)
+    result = next(chunk for chunk in chunks if chunk["type"] == "tool_result")
+    assert result["full_result"]["code"] == "TOOL_VALIDATION_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approval", [False, True])
+@pytest.mark.parametrize("stop", ["cancel", "deadline"])
+async def test_stop_during_validation_cannot_request_approval_or_dispatch(monkeypatch, approval, stop):
+    from types import SimpleNamespace
+
+    from execution_engine.agent import react_engine, tool_validation
+
+    cancelled = asyncio.Event()
+    async def validate(*args, **kwargs):
+        if stop == "cancel":
+            cancelled.set()
+        else:
+            monkeypatch.setattr(react_engine, "time", SimpleNamespace(monotonic=lambda: 10**12))
+        return []
+    monkeypatch.setattr(tool_validation, "validation_runner", lambda: SimpleNamespace(validate=validate))
+    llm = CapturingLlm([
+        [{"type": "tool_call", "call_id": "write", "tool": "restart", "arguments": {}}],
+        [{"type": "final", "usage": {}}],
+    ])
+    tools = SequentialTools()
+    engine = ReActAgentEngine(llm, tools, policy(), scope(),
+                             tool_capabilities={"restart": "write"}, confirmation_required_for_write=approval)
+    chunks = [chunk async for chunk in engine.run(
+        [Message(role="user", content="Restart.")], config(),
+        [{"name": "restart", "input_schema": {"type": "object"}}], cancelled,
+    )]
+    assert not tools.calls
+    assert not any(chunk["type"] == "approval_interrupt" for chunk in chunks)
+    if stop == "deadline":
+        assert chunks[-1]["code"] == "MAX_RUNTIME_EXCEEDED"

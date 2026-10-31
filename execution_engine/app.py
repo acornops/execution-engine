@@ -24,6 +24,7 @@ from execution_engine.readiness import collect_readiness
 from execution_engine.run_leases import maintain_run_locks
 from execution_engine.run_registry import RunRegistry, RunStatus, ServiceDraining
 from execution_engine.runtime_state import runtime
+from execution_engine.schema_validation import close_validation_runner
 from execution_engine.util.logging import bind_log_context, logger, reset_log_context, setup_logging
 from execution_engine.util.metrics import cancel_requests_total, dispatch_requests_total, queued_runs
 from execution_engine.worker import Worker
@@ -76,6 +77,7 @@ async def lifespan(app: FastAPI):
             task.cancel()
         await asyncio.gather(*runtime.tasks, return_exceptions=True)
         runtime.tasks = ()
+        await close_validation_runner()
         await orchestrator_client.close()
 
 

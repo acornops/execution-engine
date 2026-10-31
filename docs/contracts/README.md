@@ -140,6 +140,20 @@ defaults. Bootstrap aborts on rejection; discovery/sync disables matching stale
 registrations within that server's scope. Wire fields, provider-specific adapters
 and argument-validation dialects are unchanged.
 
+## Schema validation execution
+
+Execution Engine validates advertised tool arguments in a disposable child before
+approval; Gateway validates both Agent and target arguments before claiming a
+receipt or fetching secret headers. Gateway also validates trusted output in a
+child. Ordinary mismatches retain `TOOL_ARGS_INVALID`. A deadline, saturation,
+invalid schema or process failure yields `TOOL_VALIDATION_UNAVAILABLE` without
+dispatch (HTTP 503 at Gateway). Output validation failure retains
+`TOOL_RESULT_SCHEMA_INVALID`; after a write it has `outcome: unknown` and
+`retryable: false`, never automatic redispatch. Cancellation propagates.
+Existing Engine subset and Gateway jsonschema dialect rules remain; Gateway permits
+local references but rejects external reference retrieval. No schema, argument or
+result is truncated to pass validation, and there is no inline fallback.
+
 ## Change Checklist
 
 When changing a run, event, approval, skill, or gateway boundary:

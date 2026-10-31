@@ -149,8 +149,7 @@ obsolete registration through the existing administration workflow, then redisco
 and review it. Rejected tools remain disabled until a valid definition is reviewed
 and enabled through the existing administration flow. If registry cleanup fails,
 built-in bootstrap keeps the schema rejection; retry sync/discovery once the registry
-recovers. No migration, dependency or setting is added. Metadata bounds
-do not provide a hard CPU deadline for regex/schema validation; that remains deferred.
+recovers. No migration, dependency or setting is added. Validation CPU deadlines are described below.
 
 ## Failure Runbooks
 
@@ -207,3 +206,22 @@ Startup loads only the available local queue slots from an incremental Redis sca
 Finishing tasks and the periodic delivery retry loop refill those slots from durable
 queued work. Reducing worker concurrency or consolidating failed replicas therefore
 does not strand queued runs beyond the initial startup batch.
+
+### Schema validation deadlines
+
+Each Python service permits four disposable validation children and sixteen
+waiters per service process. Queue wait and validation each have a one-second
+budget; validation includes launch, IPC and exit. Engine also honors the remaining
+run deadline. Cancellation terminates and reaps the child. Cleanup allows 100ms
+for TERM before KILL, with a 250ms request cleanup budget. If reaping exceeds that
+budget, capacity stays occupied and new validation is rejected until cleanup
+finishes; shutdown waits for tracked children. There is no deadline-disable option.
+
+Schemas retain the existing 256 KiB/depth16/100-items/16,384-values limits (remote
+metadata still has its tighter limits). Input instances are limited to 1,000,000
+compact UTF-8 JSON bytes; output instances to 2 MiB plus 1 KiB of envelope overhead (the existing 2 MiB data
+limit remains), both depth32/65,536 values.
+IPC is bounded to 3 MiB input and 8 KiB output; at most twelve diagnostics have
+256-byte paths/messages. Children receive schema/instance JSON and an empty
+environment, and do not load service configuration or retrieve external schemas.
+Roll out both Python services to remove inline validation from both boundaries.

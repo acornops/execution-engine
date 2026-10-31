@@ -46,3 +46,5 @@ This `docs/` tree is the repository-local system of record for agent-readable de
 - [Workspace execution authority plan](exec-plans/completed/workspace-execution-authority.md)
 
 - [Graceful rolling restart plan](exec-plans/active/2026-10-29-graceful-rolling-restarts.md)
+
+- [Validation deadlines and workflow retention](exec-plans/completed/2026-10-31-validation-retention.md)
